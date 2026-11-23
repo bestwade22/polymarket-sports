@@ -93,6 +93,10 @@ jobs:
           API_NINJAS_KEY: ${{ secrets.API_NINJAS_KEY }}
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          # When set, the stack reads the credentials from this existing
+          # secret instead of creating one - so the wallet key never has to
+          # be pasted into GitHub.
+          BOT_SECRET_ARN: ${{ vars.BOT_SECRET_ARN }}
         run: |
           sam deploy \
             --stack-name "$STACK_NAME" \
@@ -109,6 +113,7 @@ jobs:
               "ApiNinjasKey=${API_NINJAS_KEY}" \
               "TelegramBotToken=${TELEGRAM_BOT_TOKEN}" \
               "TelegramChatId=${TELEGRAM_CHAT_ID}" \
+              "BotSecretArn=${BOT_SECRET_ARN}" \
               "DryRun=true"
 
       # SAM image deploys leave old digests in ECR; the lifecycle policy

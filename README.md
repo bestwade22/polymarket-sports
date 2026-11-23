@@ -165,9 +165,8 @@ for the Fargate task). `.github/workflows/deploy-lambda.yml` builds both,
 pushes them to ECR and deploys the stack.
 
 ```bash
-# secrets in GitHub: CLOB_PRIVATE_KEY, DEPOSIT_WALLET_ADDRESS,
-# API_NINJAS_KEY, TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID
-# repository variable: AWS_DEPLOY_ROLE_ARN
+# repository variable: AWS_DEPLOY_ROLE_ARN  (required)
+# repository variable: BOT_SECRET_ARN      (optional)
 ```
 
 Deploy into **ap-east-1 (Hong Kong)**, the same region as
@@ -175,6 +174,31 @@ Deploy into **ap-east-1 (Hong Kong)**, the same region as
 
 The dashboard is a static site on S3 behind CloudFront, with `/dashboard`
 routed to the API Gateway so the browser never sees AWS credentials.
+
+### Credentials
+
+The bot reads its credentials from AWS Secrets Manager at startup, using
+the `SECRETS_ARN` environment variable.
+
+By default the stack creates and populates its own secret
+(`polymarket-sports/bot`) from CloudFormation parameters, which means the
+private key has to be passed through GitHub Actions secrets
+(`CLOB_PRIVATE_KEY`, `DEPOSIT_WALLET_ADDRESS`, `API_NINJAS_KEY`,
+`TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`).
+
+**Setting `BOT_SECRET_ARN` to an existing secret skips that entirely.**
+The stack then reads that secret instead, does not create one of its own,
+and no credentials need to be stored in GitHub at all. Point it at the
+`polymarket-trader` secret to share the same wallet:
+
+```
+Settings -> Secrets and variables -> Actions -> Variables
+  BOT_SECRET_ARN = arn:aws:secretsmanager:ap-east-1:ACCOUNT_ID:secret:NAME
+```
+
+The secret must contain the keys `PRIVATE_KEY`, `DEPOSIT_WALLET_ADDRESS`,
+`API_NINJAS_KEY`, `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID`. Extra keys
+are ignored. See `docs/aws-console-setup.md` for the one-time AWS setup.
 
 ## Cost
 

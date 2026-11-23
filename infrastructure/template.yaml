@@ -37,6 +37,16 @@ Parameters:
   TelegramChatId:
     Type: String
     Default: ""
+  BotSecretArn:
+    Type: String
+    Default: ""
+    Description: >-
+      ARN of an existing Secrets Manager secret to read the credentials from.
+      When set, the stack does not create its own secret and the values below
+      are ignored - the existing secret is used as-is. This lets
+      polymarket-sports share the wallet credentials that already live in
+      the polymarket-trader secret, so the private key never has to be
+      pasted into GitHub.
   DryRun:
     Type: String
     Default: "true"
@@ -77,6 +87,12 @@ Parameters:
       Backstop scale-down time. The listener normally scales down when its
       window closes; this cron is the fallback if that path fails.
 
+Conditions:
+  # When BotSecretArn is set, the stack reads the credentials from that
+  # existing secret and does not create one of its own.
+  UseExistingSecret: !Not [!Equals [!Ref BotSecretArn, ""]]
+  CreateOwnSecret: !Equals [!Ref BotSecretArn, ""]
+
 Globals:
   Function:
     Timeout: 120
@@ -86,7 +102,7 @@ Globals:
       Variables:
         DYNAMODB_TABLE: !Ref StateTable
         SQS_QUEUE_URL: !Ref TradeQueue
-        SECRETS_ARN: !Ref BotSecret
+        SECRETS_ARN: !If [UseExistingSecret, !Ref BotSecretArn, !Ref BotSecret]
         DRY_RUN: !Ref DryRun
         SHARE_COUNT: !Ref ShareCount
         PRICE_DROP_RATIO: !Ref PriceDropRatio
@@ -145,8 +161,13 @@ Resources:
 
   # --- Secrets -------------------------------------------------------------
 
+  # Created only when no existing secret was supplied. When BotSecretArn is
+  # set, the stack reads that secret instead and this resource is not
+  # created at all - so the wallet credentials never have to be pasted
+  # into GitHub.
   BotSecret:
     Type: AWS::SecretsManager::Secret
+    Condition: CreateOwnSecret
     Properties:
       Name: polymarket-sports/bot
       Description: CLOB key, wallet, API Ninjas key and Telegram token for the NBA bot.
@@ -177,7 +198,7 @@ Resources:
       Environment:
         Variables:
           DYNAMODB_TABLE: !Ref StateTable
-          SECRETS_ARN: !Ref BotSecret
+          SECRETS_ARN: !If [UseExistingSecret, !Ref BotSecretArn, !Ref BotSecret]
           DRY_RUN: !Ref DryRun
           SPORTS_LEAGUE: nba
           POLYMARKET_SERIES_ID: "10345"
@@ -203,7 +224,7 @@ Resources:
       Environment:
         Variables:
           DYNAMODB_TABLE: !Ref StateTable
-          SECRETS_ARN: !Ref BotSecret
+          SECRETS_ARN: !If [UseExistingSecret, !Ref BotSecretArn, !Ref BotSecret]
           DRY_RUN: !Ref DryRun
           PRE_GAME_SNAPSHOT_MINUTES: !Ref PreGameSnapshotMinutes
           SPORTS_LEAGUE: nba
@@ -231,7 +252,7 @@ Resources:
         Variables:
           DYNAMODB_TABLE: !Ref StateTable
           SQS_QUEUE_URL: !Ref TradeQueue
-          SECRETS_ARN: !Ref BotSecret
+          SECRETS_ARN: !If [UseExistingSecret, !Ref BotSecretArn, !Ref BotSecret]
           DRY_RUN: !Ref DryRun
           SHARE_COUNT: !Ref ShareCount
           PRICE_DROP_RATIO: !Ref PriceDropRatio
@@ -267,7 +288,7 @@ Resources:
       Environment:
         Variables:
           DYNAMODB_TABLE: !Ref StateTable
-          SECRETS_ARN: !Ref BotSecret
+          SECRETS_ARN: !If [UseExistingSecret, !Ref BotSecretArn, !Ref BotSecret]
           DRY_RUN: !Ref DryRun
       Events:
         Api:
@@ -418,7 +439,7 @@ Resources:
           Environment:
             - {Name: DYNAMODB_TABLE, Value: !Ref StateTable}
             - {Name: SQS_QUEUE_URL, Value: !Ref TradeQueue}
-            - {Name: SECRETS_ARN, Value: !Ref BotSecret}
+            - {Name: SECRETS_ARN, Value: !If [UseExistingSecret, !Ref BotSecretArn, !Ref BotSecret]}
             - {Name: DRY_RUN, Value: !Ref DryRun}
             - {Name: SHARE_COUNT, Value: !Ref ShareCount}
             - {Name: PRICE_DROP_RATIO, Value: !Ref PriceDropRatio}
@@ -491,7 +512,7 @@ Resources:
       Environment:
         Variables:
           DYNAMODB_TABLE: !Ref StateTable
-          SECRETS_ARN: !Ref BotSecret
+          SECRETS_ARN: !If [UseExistingSecret, !Ref BotSecretArn, !Ref BotSecret]
           DRY_RUN: !Ref DryRun
           STACK_NAME: !Ref AWS::StackName
           AWS_ACCOUNT_ID: !Ref AWS::AccountId
@@ -649,7 +670,8 @@ Resources:
                 Resource: !GetAtt TradeQueue.Arn
               - Effect: Allow
                 Action: secretsmanager:GetSecretValue
-                Resource: !Ref BotSecret
+                # Either the stack's own secret or the imported one.
+                Resource: !If [UseExistingSecret, !Ref BotSecretArn, !Ref BotSecret]
               # The scale job sets the listener service's desired count.
               - Effect: Allow
                 Action:
@@ -698,7 +720,8 @@ Resources:
                 Resource: !GetAtt TradeQueue.Arn
               - Effect: Allow
                 Action: secretsmanager:GetSecretValue
-                Resource: !Ref BotSecret
+                # Either the stack's own secret or the imported one.
+                Resource: !If [UseExistingSecret, !Ref BotSecretArn, !Ref BotSecret]
 
   EcsExecutionRole:
     Type: AWS::IAM::Role
@@ -763,3 +786,6 @@ Outputs:
     Value: !Ref Cluster
   ListenerServiceName:
     Value: !GetAtt ListenerService.Name
+  BotSecretArn:
+    Description: The Secrets Manager secret the bot reads its credentials from.
+    Value: !If [UseExistingSecret, !Ref BotSecretArn, !Ref BotSecret]
