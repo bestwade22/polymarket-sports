@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import base64
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -208,18 +209,43 @@ class TestEndToEnd:
             "done\n"
             'args="${args# }"\n'
             'case "$args" in\n'
+            '  "sts get-caller-identity"*)\n'
+            '    if [ "$FAKE_HAS_CREDS" = "1" ]; then\n'
+            "      echo '{\"UserId\":\"AIDATEST\",\"Account\":\"830430162436\"}'\n"
+            "    else\n"
+            '      echo "aws: [ERROR]: An error occurred (NoCredentials): '
+            'Unable to locate credentials." >&2\n'
+            "      exit 253\n"
+            "    fi\n"
+            "    ;;\n"
             '  "iam get-role "*)\n'
-            f'    cat "{trust_file}"\n'
+            '    if [ "$FAKE_HAS_CREDS" != "1" ]; then\n'
+            '      echo "aws: [ERROR]: An error occurred (NoCredentials): '
+            'Unable to locate credentials." >&2\n'
+            "      exit 253\n"
+            "    fi\n"
+            '    if [ "$FAKE_ROLE_EXISTS" = "1" ]; then\n'
+            f'      cat "{trust_file}"\n'
+            "    else\n"
+            '      echo "NoSuchEntity: Role not found" >&2; exit 254\n'
+            "    fi\n"
             "    ;;\n"
             '  "iam list-open-id-connect-providers"*)\n'
+            '    if [ "$FAKE_HAS_CREDS" != "1" ]; then\n'
+            '      echo "aws: [ERROR]: An error occurred (NoCredentials): '
+            'Unable to locate credentials." >&2\n'
+            "      exit 253\n"
+            "    fi\n"
             "    echo '{\"OpenIdConnectProviderList\":[\"arn:aws:iam::"
-            '830430162436:oidc-provider/token.actions.githubusercontent.com"]}\'\n'
+            '830430162436:oidc-provider/token.actions.githubusercontent.com\"]}\'\n'
             "    ;;\n"
             "  *) exit 1 ;;\n"
             "esac\n"
         )
         script.chmod(0o755)
         monkeypatch.setenv("PATH", f"{bin_dir}:{__import__('os').environ['PATH']}")
+        monkeypatch.setenv("FAKE_HAS_CREDS", "1")
+        monkeypatch.setenv("FAKE_ROLE_EXISTS", "1")
         return write_role, trust_file
 
     ROLE = "arn:aws:iam::830430162436:role/github-polymarket-sports-deploy"
@@ -315,3 +341,40 @@ class TestEndToEnd:
             result.stdout
         )
         assert result.returncode == 0
+
+    def test_without_credentials_the_verdict_is_inconclusive(self, mock_aws):
+        """No credentials means no trust policy, so no verdict either."""
+        write_role, _ = mock_aws
+        write_role(CORRECT_TRUST)
+        os.environ["FAKE_HAS_CREDS"] = "0"
+        try:
+            result = self._run(self.ROLE, make_token(TOKEN_CLAIMS))
+        finally:
+            os.environ["FAKE_HAS_CREDS"] = "1"
+        assert "VERDICT: inconclusive" in result.stdout
+        assert "the role may or may not exist" in result.stdout.lower()
+        # It must not claim the trust policy is wrong - it never saw it.
+        assert "does not authorise this token" not in result.stdout
+
+    def test_without_credentials_it_prints_the_policy_that_would_work(
+        self, mock_aws
+    ):
+        write_role, _ = mock_aws
+        write_role(CORRECT_TRUST)
+        os.environ["FAKE_HAS_CREDS"] = "0"
+        try:
+            result = self._run(self.ROLE, make_token(TOKEN_CLAIMS))
+        finally:
+            os.environ["FAKE_HAS_CREDS"] = "1"
+        assert "oidc-provider/token.actions.githubusercontent.com" in result.stdout
+        assert "repo:bestwade22@31284603" in result.stdout
+
+    def test_a_missing_role_is_distinguished_from_no_credentials(self, mock_aws):
+        write_role, _ = mock_aws
+        os.environ["FAKE_ROLE_EXISTS"] = "0"
+        try:
+            result = self._run(self.ROLE, make_token(TOKEN_CLAIMS))
+        finally:
+            os.environ["FAKE_ROLE_EXISTS"] = "1"
+        assert "the role does NOT exist" in result.stdout
+        assert "may or may not exist" not in result.stdout

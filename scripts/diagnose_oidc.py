@@ -41,6 +41,12 @@ def _aws(*args: str) -> tuple[int, str]:
     return proc.returncode, (proc.stdout or "") + (proc.stderr or "")
 
 
+def _has_credentials() -> bool:
+    """Reports whether the environment carries usable AWS credentials."""
+    code, out = _aws("sts", "get-caller-identity")
+    return code == 0
+
+
 def fetch_token() -> str:
     """Fetches the job's OIDC token from the GitHub token endpoint."""
     url = os.environ.get("ACTIONS_ID_TOKEN_REQUEST_URL", "")
@@ -148,12 +154,24 @@ def main() -> int:
 
     # 1. Does the role exist?
     print("[1] Role lookup")
+    credentialed = _has_credentials()
+    if not credentialed:
+        print("    no AWS credentials in this job (expected before the")
+        print("    credential step runs, or after it failed).")
+        print("    The role's trust policy cannot be read from here.")
+        print("    >>> Re-run this script after the role has been assumed, or")
+        print("    >>> check the trust policy in the IAM console by hand.")
+        print()
     role = get_role(role_name)
     if role is None:
-        print("    RESULT: the role does NOT exist, or the caller cannot see it.")
-        print("    >>> A missing role and a broken trust policy produce the same")
-        print("    >>> STS error message, so this is worth ruling out first.")
-        print()
+        if not credentialed:
+            print("    RESULT: unknown - the role may or may not exist.")
+            print()
+        else:
+            print("    RESULT: the role does NOT exist.")
+            print("    >>> A missing role and a broken trust policy produce the same")
+            print("    >>> STS error message, so this is worth ruling out first.")
+            print()
     else:
         print(f"    role exists : {role.get('Arn')}")
         print(f"    role id     : {role.get('RoleId')}")
@@ -292,7 +310,36 @@ def main() -> int:
     # 6. Verdict.
     print()
     print("=" * 72)
-    if problems:
+    if trust is None:
+        # Without the trust policy there is nothing to compare against, so
+        # claiming a verdict would be guesswork. Say what is known instead.
+        print("VERDICT: inconclusive - the role's trust policy could not be read.")
+        print()
+        print("What is known:")
+        print(f"  token subject : {subject}")
+        print(f"  token aud     : {audiences}")
+        print()
+        if not credentialed:
+            print("The job had no AWS credentials, so the role could not be")
+            print("looked up. The trust policy may still be correct - check it")
+            print("in the IAM console, and run this script where you have")
+            print("credentials:")
+            print(f"    python3 scripts/diagnose_oidc.py {role_arn}")
+        else:
+            print("The role could not be read despite credentials being present.")
+            print("The role may not exist, or the caller may lack iam:GetRole.")
+        print()
+        print("A trust policy that would accept this token needs:")
+        print(
+            '  "Principal": {"Federated": '
+            f'"arn:aws:iam::{account_id}:oidc-provider/'
+            'token.actions.githubusercontent.com"}'
+        )
+        print(
+            '  "Condition": {"StringLike": '
+            f'{{"token.actions.githubusercontent.com:sub": "{subject}"}}}}'
+        )
+    elif problems:
         print("VERDICT: the trust policy does not authorise this token.")
         print()
         for index, problem in enumerate(problems, 1):
