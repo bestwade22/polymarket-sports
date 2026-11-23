@@ -38,9 +38,10 @@ TOKEN_CLAIMS = {
     "ref": "refs/heads/main",
 }
 
-# GitHub used to issue repo:owner/repo:ref subjects. It now embeds the
-# numeric owner and repository ids, and a trust policy written in the
-# old form stops matching.
+# GitHub uses the previous repo:owner/repo:ref subject for repositories
+# created before July 15, 2026, and an immutable subject carrying the
+# numeric owner and repository ids for ones created after. A trust
+# policy written in the wrong form stops matching.
 LEGACY_TOKEN_CLAIMS = {
     "iss": "https://token.actions.githubusercontent.com",
     "aud": "sts.amazonaws.com",

@@ -267,10 +267,11 @@ def main() -> int:
                 f"        condition : {sub_conditions}\n"
                 "    >>> Put the token subject above into the trust policy verbatim."
             )
-            # GitHub now issues subjects that embed the numeric owner and
-            # repository ids: repo:owner@ID/repo@ID:ref:refs/heads/main.
-            # A condition written in the older repo:owner/repo:ref form
-            # never matches those, and the difference is easy to miss.
+            # Repositories created after July 15, 2026 get an immutable
+            # subject that embeds the numeric owner and repository ids:
+            # repo:owner@ID/repo@ID:ref:refs/heads/main. A condition
+            # written in the older repo:owner/repo:ref form never
+            # matches those, and the difference is easy to miss.
             if re.search(r"@\d+", subject):
                 problems.append(
                     "This token's subject carries GitHub's numeric id form.\n"
