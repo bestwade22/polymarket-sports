@@ -1,0 +1,10 @@
+.venv/
+.env
+__pycache__/
+*.pyc
+.pytest_cache/
+# Local moto server runtime (pid + log)
+.local/
+# Local dashboard exports
+data/exports/
+logs/*.log

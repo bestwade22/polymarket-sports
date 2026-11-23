@@ -1,0 +1,765 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Transform: AWS::Serverless-2016-10-31
+Description: NBA Polymarket trading bot - DynamoDB state, SQS trade queue, scheduled Lambdas, Fargate listener, static dashboard.
+
+Parameters:
+  ImageUri:
+    Type: String
+    Description: ECR image URI for the Lambda functions (Lambda base image).
+  ImageTag:
+    Type: String
+    Default: latest
+  FargateImageUri:
+    Type: String
+    Description: ECR image URI for the Fargate listener (plain base image).
+  FargateImageTag:
+    Type: String
+    Default: latest
+  PrivateKey:
+    Type: String
+    NoEcho: true
+    Description: CLOB signing key. Stored in Secrets Manager, never in this template.
+  DepositWalletAddress:
+    Type: String
+    Default: ""
+    Description: Polymarket proxy wallet address (signature type 1).
+  SignatureType:
+    Type: String
+    Default: "1"
+  ApiNinjasKey:
+    Type: String
+    NoEcho: true
+    Default: ""
+  TelegramBotToken:
+    Type: String
+    NoEcho: true
+    Default: ""
+  TelegramChatId:
+    Type: String
+    Default: ""
+  DryRun:
+    Type: String
+    Default: "true"
+    AllowedValues: ["true", "false"]
+  ShareCount:
+    Type: Number
+    Default: 5
+  PriceDropRatio:
+    Type: Number
+    Default: 0.5
+  PreGameSnapshotMinutes:
+    Type: Number
+    Default: 30
+  ListenerLeadMinutes:
+    Type: Number
+    Default: 40
+    Description: >-
+      How long before the first tip-off the Fargate listener must already be
+      running. Must cover the pre-game snapshot (PRE_GAME_SNAPSHOT_MINUTES)
+      plus the listener's watch-loop poll interval.
+  ListenerTrailMinutes:
+    Type: Number
+    Default: 90
+    Description: >-
+      How long after the last tip-off the listener stays running, to cover
+      the halftime cutoff and any in-flight buy's recovery sell.
+  ScaleUpCron:
+    Type: String
+    Default: "cron(0 15 * * ? *)"
+    Description: >-
+      Backstop scale-up time. The listener normally scales up from the window
+      derived from the day's tip-off times; this cron is the fallback if that
+      path fails. Must be before the earliest tip-off.
+  ScaleDownCron:
+    Type: String
+    Default: "cron(0 20 * * ? *)"
+    Description: >-
+      Backstop scale-down time. The listener normally scales down when its
+      window closes; this cron is the fallback if that path fails.
+
+Globals:
+  Function:
+    Timeout: 120
+    MemorySize: 512
+    Architectures: [arm64]
+    Environment:
+      Variables:
+        DYNAMODB_TABLE: !Ref StateTable
+        SQS_QUEUE_URL: !Ref TradeQueue
+        SECRETS_ARN: !Ref BotSecret
+        DRY_RUN: !Ref DryRun
+        SHARE_COUNT: !Ref ShareCount
+        PRICE_DROP_RATIO: !Ref PriceDropRatio
+        PRE_GAME_SNAPSHOT_MINUTES: !Ref PreGameSnapshotMinutes
+        LISTENER_LEAD_MINUTES: !Ref ListenerLeadMinutes
+        LISTENER_TRAIL_MINUTES: !Ref ListenerTrailMinutes
+        SPORTS_LEAGUE: nba
+        POLYMARKET_SERIES_ID: "10345"
+        TTL_DAYS: "3"
+
+Resources:
+  # --- State ---------------------------------------------------------------
+
+  StateTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: SportsBotState
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - {AttributeName: pk, AttributeType: S}
+        - {AttributeName: sk, AttributeType: S}
+        - {AttributeName: gsi1pk, AttributeType: S}
+        - {AttributeName: gsi1sk, AttributeType: S}
+      KeySchema:
+        - {AttributeName: pk, KeyType: HASH}
+        - {AttributeName: sk, KeyType: RANGE}
+      GlobalSecondaryIndexes:
+        - IndexName: GSI1
+          KeySchema:
+            - {AttributeName: gsi1pk, KeyType: HASH}
+            - {AttributeName: gsi1sk, KeyType: RANGE}
+          Projection: {ProjectionType: ALL}
+      TimeToLiveSpecification:
+        AttributeName: expires_at
+        Enabled: true
+      PointInTimeRecoverySpecification:
+        PointInTimeRecoveryEnabled: true
+
+  TradeQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: SportsBotTrades
+      # >= 6x the trade worker's 60s timeout, so a slow order poll is never
+      # redelivered while it is still running.
+      VisibilityTimeout: 360
+      MessageRetentionPeriod: 86400
+      RedrivePolicy:
+        deadLetterTargetArn: !GetAtt TradeQueueDlq.Arn
+        maxReceiveCount: 5
+
+  TradeQueueDlq:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: SportsBotTradesDlq
+      MessageRetentionPeriod: 1209600
+
+  # --- Secrets -------------------------------------------------------------
+
+  BotSecret:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Name: polymarket-sports/bot
+      Description: CLOB key, wallet, API Ninjas key and Telegram token for the NBA bot.
+      SecretString: !Sub |
+        {
+          "PRIVATE_KEY": "${PrivateKey}",
+          "DEPOSIT_WALLET_ADDRESS": "${DepositWalletAddress}",
+          "SIGNATURE_TYPE": "${SignatureType}",
+          "API_NINJAS_KEY": "${ApiNinjasKey}",
+          "TELEGRAM_BOT_TOKEN": "${TelegramBotToken}",
+          "TELEGRAM_CHAT_ID": "${TelegramChatId}",
+          "DRY_RUN": "${DryRun}"
+        }
+
+  # --- Lambdas -------------------------------------------------------------
+
+  FetchDailyFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      PackageType: Image
+      ImageUri: !Sub "${ImageUri}:${ImageTag}"
+      ImageConfig:
+        Command:
+          - lambda_handlers.fetch_daily.handler
+      Role: !GetAtt LambdaRole.Arn
+      Timeout: 300
+      MemorySize: 512
+      Environment:
+        Variables:
+          DYNAMODB_TABLE: !Ref StateTable
+          SECRETS_ARN: !Ref BotSecret
+          DRY_RUN: !Ref DryRun
+          SPORTS_LEAGUE: nba
+          POLYMARKET_SERIES_ID: "10345"
+      Events:
+        Schedule:
+          Type: Schedule
+          Properties:
+            Schedule: cron(30 0 * * ? *)
+            Description: Daily NBA schedule fetch at 00:30 Hong Kong time.
+            Enabled: true
+
+  SnapshotPriceFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      PackageType: Image
+      ImageUri: !Sub "${ImageUri}:${ImageTag}"
+      ImageConfig:
+        Command:
+          - lambda_handlers.snapshot_price.handler
+      Role: !GetAtt LambdaRole.Arn
+      Timeout: 120
+      MemorySize: 256
+      Environment:
+        Variables:
+          DYNAMODB_TABLE: !Ref StateTable
+          SECRETS_ARN: !Ref BotSecret
+          DRY_RUN: !Ref DryRun
+          PRE_GAME_SNAPSHOT_MINUTES: !Ref PreGameSnapshotMinutes
+          SPORTS_LEAGUE: nba
+      Events:
+        Schedule:
+          Type: Schedule
+          Properties:
+            Schedule: cron(0/5 * * * ? *)
+            Description: Pre-game price snapshot every 5 minutes.
+            Enabled: true
+
+  TradeWorkerFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      PackageType: Image
+      ImageUri: !Sub "${ImageUri}:${ImageTag}"
+      ImageConfig:
+        Command:
+          - lambda_handlers.trade_worker.handler
+      Role: !GetAtt LambdaRole.Arn
+      Timeout: 60
+      MemorySize: 512
+      ReservedConcurrentExecutions: 5
+      Environment:
+        Variables:
+          DYNAMODB_TABLE: !Ref StateTable
+          SQS_QUEUE_URL: !Ref TradeQueue
+          SECRETS_ARN: !Ref BotSecret
+          DRY_RUN: !Ref DryRun
+          SHARE_COUNT: !Ref ShareCount
+          PRICE_DROP_RATIO: !Ref PriceDropRatio
+      Events:
+        TradeQueue:
+          Type: SQS
+          Properties:
+            Queue: !GetAtt TradeQueue.Arn
+            BatchSize: 1
+            MaximumBatchingWindowInSeconds: 1
+            FunctionResponseTypes: [ReportBatchItemFailures]
+
+  DashboardApi:
+    Type: AWS::Serverless::Api
+    Properties:
+      StageName: Prod
+      Cors:
+        AllowOrigin: "'*'"
+        AllowMethods: "'GET'"
+        AllowHeaders: "'Content-Type'"
+
+  DashboardApiFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      PackageType: Image
+      ImageUri: !Sub "${ImageUri}:${ImageTag}"
+      ImageConfig:
+        Command:
+          - lambda_handlers.dashboard_api.handler
+      Role: !GetAtt LambdaRole.Arn
+      Timeout: 30
+      MemorySize: 256
+      Environment:
+        Variables:
+          DYNAMODB_TABLE: !Ref StateTable
+          SECRETS_ARN: !Ref BotSecret
+          DRY_RUN: !Ref DryRun
+      Events:
+        Api:
+          Type: Api
+          Properties:
+            RestApiId: !Ref DashboardApi
+            Path: /dashboard
+            Method: GET
+
+  # --- Dashboard site ------------------------------------------------------
+
+  DashboardBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub "${AWS::AccountId}-polymarket-sports-dashboard"
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      LifecycleConfiguration:
+        Rules:
+          - Id: ExpireOldVersions
+            Status: Enabled
+            NoncurrentVersionExpiration:
+              NoncurrentDays: 30
+
+  DashboardOriginAccessControl:
+    Type: AWS::CloudFront::OriginAccessControl
+    Properties:
+      OriginAccessControlConfig:
+        Name: !Sub "${AWS::StackName}-dashboard-oac"
+        Description: OAC for the dashboard bucket
+        OriginAccessControlOriginType: s3
+        SigningBehavior: always
+        SigningProtocol: sigv4
+
+  # Forwards the Accept header, which the API uses to pick the response.
+  DashboardApiOriginRequestPolicy:
+    Type: AWS::CloudFront::OriginRequestPolicy
+    Properties:
+      OriginRequestPolicyConfig:
+        Name: !Sub "${AWS::StackName}-dashboard-api-orp"
+        Comment: Forward the Accept header to the dashboard API
+        HeadersConfig:
+          HeaderBehavior: whitelist
+          Headers:
+            - Accept
+        QueryStringsConfig:
+          QueryStringBehavior: all
+        CookiesConfig:
+          CookieBehavior: none
+
+  DashboardDistribution:
+    Type: AWS::CloudFront::Distribution
+    Properties:
+      DistributionConfig:
+        Enabled: true
+        DefaultRootObject: index.html
+        Origins:
+          - Id: DashboardBucket
+            DomainName: !GetAtt DashboardBucket.RegionalDomainName
+            OriginAccessControlId: !GetAtt DashboardOriginAccessControl.Id
+            S3OriginConfig: {}
+          # The dashboard API is served from the same host, so the browser
+          # never needs to know the API Gateway URL (and never needs
+          # AWS credentials).
+          - Id: DashboardApi
+            DomainName: !Sub "${DashboardApi}.execute-api.${AWS::Region}.amazonaws.com"
+            OriginPath: /Prod
+            CustomOriginConfig:
+              OriginProtocolPolicy: https-only
+              OriginSSLProtocols: [TLSv1.2]
+              HTTPPort: 80
+              HTTPSPort: 443
+        DefaultCacheBehavior:
+          TargetOriginId: DashboardBucket
+          ViewerProtocolPolicy: redirect-to-https
+          AllowedMethods: [GET, HEAD]
+          CachePolicyId: 658327ea-f89d-4fab-a63d-7e88639e58f6
+        CacheBehaviors:
+          - PathPattern: /dashboard
+            TargetOriginId: DashboardApi
+            ViewerProtocolPolicy: redirect-to-https
+            AllowedMethods: [GET, HEAD, OPTIONS]
+            CachePolicyId: 4135ea2d-6df8-44a3-9df3-4b5a84be39ad
+            OriginRequestPolicyId: !Ref DashboardApiOriginRequestPolicy
+        ViewerCertificate:
+          CloudFrontDefaultCertificate: true
+
+  DashboardBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref DashboardBucket
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: AllowCloudFrontRead
+            Effect: Allow
+            Principal:
+              Service: cloudfront.amazonaws.com
+            Action: s3:GetObject
+            Resource: !Sub "${DashboardBucket.Arn}/*"
+            Condition:
+              StringEquals:
+                AWS:SourceArn: !Sub "arn:${AWS::Partition}:cloudfront::${AWS::AccountId}:distribution/${DashboardDistribution}"
+
+  # --- Fargate listener ----------------------------------------------------
+
+  Cluster:
+    Type: AWS::ECS::Cluster
+    Properties:
+      ClusterName: !Sub "${AWS::StackName}-cluster"
+      # The Fargate providers must be associated with the cluster before a
+      # service may use them in a capacity provider strategy.
+      CapacityProviders:
+        - FARGATE
+        - FARGATE_SPOT
+      ClusterSettings:
+        - Name: containerInsights
+          Value: enabled
+
+  ListenerLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/aws/ecs/${AWS::StackName}/listener"
+      RetentionInDays: 30
+
+  ListenerTaskDefinition:
+    Type: AWS::ECS::TaskDefinition
+    Properties:
+      Family: !Sub "${AWS::StackName}-listener"
+      RequiresCompatibilities: [FARGATE]
+      NetworkMode: awsvpc
+      Cpu: "256"
+      Memory: "512"
+      ExecutionRoleArn: !GetAtt EcsTaskRole.Arn
+      TaskRoleArn: !GetAtt EcsTaskRole.Arn
+      ContainerDefinitions:
+        - Name: listener
+          Image: !Sub "${FargateImageUri}:${FargateImageTag}"
+          Essential: true
+          Command: ["python", "-m", "src.main", "listen"]
+          Environment:
+            - {Name: DYNAMODB_TABLE, Value: !Ref StateTable}
+            - {Name: SQS_QUEUE_URL, Value: !Ref TradeQueue}
+            - {Name: SECRETS_ARN, Value: !Ref BotSecret}
+            - {Name: DRY_RUN, Value: !Ref DryRun}
+            - {Name: SHARE_COUNT, Value: !Ref ShareCount}
+            - {Name: PRICE_DROP_RATIO, Value: !Ref PriceDropRatio}
+            - {Name: SPORTS_LEAGUE, Value: nba}
+            - {Name: STACK_NAME, Value: !Ref AWS::StackName}
+            - {Name: ECS_CLUSTER_NAME, Value: !Ref Cluster}
+          LogConfiguration:
+            LogDriver: awslogs
+            Options:
+              awslogs-group: !Ref ListenerLogGroup
+              awslogs-region: !Ref "AWS::Region"
+              awslogs-stream-prefix: listener
+
+  ListenerService:
+    Type: AWS::ECS::Service
+    Properties:
+      ServiceName: !Sub "${AWS::StackName}-listener"
+      Cluster: !Ref Cluster
+      TaskDefinition: !Ref ListenerTaskDefinition
+      DesiredCount: 0
+      # Note: LaunchType and CapacityProviderStrategy are mutually exclusive
+      # in ECS, so only the strategy below is set.
+      DeploymentConfiguration:
+        MaximumPercent: 200
+        MinimumHealthyPercent: 0
+      # Spot is the cheap default; On-Demand is the fallback so the listener
+      # is guaranteed to be running at tip-off even when Spot capacity is
+      # exhausted. ECS tries the providers in order and falls through to
+      # FARGATE when Spot cannot place the task. The whole season's cost
+      # difference is about $8.
+      CapacityProviderStrategy:
+        - CapacityProvider: FARGATE_SPOT
+          Weight: 4
+        - CapacityProvider: FARGATE
+          Weight: 1
+      NetworkConfiguration:
+        AwsvpcConfiguration:
+          AssignPublicIp: ENABLED
+          SecurityGroups:
+            - !GetAtt ListenerSecurityGroup.GroupId
+          Subnets:
+            - !Ref PublicSubnetA
+            - !Ref PublicSubnetB
+      HealthCheckGracePeriodSeconds: 60
+
+  # --- Scheduler for the listener scale up/down ----------------------------
+  #
+  # The listener's on-window is derived from the day's tip-off times by the
+  # daily fetch and stored in DynamoDB (DATE#<day>/WINDOW). The scale job
+  # below reads that window and sets the ECS service's desired count to 1
+  # while it is open and 0 when it is not. A fixed cron cannot express this:
+  # an early tip-off, a double header or a rescheduled game all move the
+  # window.
+  #
+  # The daily fetch also creates two one-shot EventBridge schedules (at the
+  # window's start and end) so the listener scales up exactly on time even
+  # if the scale job has not run for hours. Those schedules use ScaleUpRole.
+
+  ScaleListenerFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      PackageType: Image
+      ImageUri: !Sub "${ImageUri}:${ImageTag}"
+      ImageConfig:
+        Command:
+          - lambda_handlers.scale_listener.handler
+      Role: !GetAtt LambdaRole.Arn
+      Timeout: 120
+      MemorySize: 256
+      Environment:
+        Variables:
+          DYNAMODB_TABLE: !Ref StateTable
+          SECRETS_ARN: !Ref BotSecret
+          DRY_RUN: !Ref DryRun
+          STACK_NAME: !Ref AWS::StackName
+          AWS_ACCOUNT_ID: !Ref AWS::AccountId
+          ECS_CLUSTER_NAME: !Ref Cluster
+          ECS_SERVICE_NAME: !GetAtt ListenerService.Name
+          SCHEDULER_ROLE_ARN: !GetAtt ScaleUpRole.Arn
+      Events:
+        Schedule:
+          Type: Schedule
+          Properties:
+            Schedule: cron(0/5 * * * ? *)
+            Description: Scale the Fargate listener to match the day's game window.
+            Enabled: true
+
+  ScaleUpSchedule:
+    Type: AWS::Scheduler::Schedule
+    Properties:
+      Name: !Sub "${AWS::StackName}-scale-up"
+      ScheduleExpression: !Ref ScaleUpCron
+      FlexibleTimeWindow:
+        Mode: "OFF"
+      Target:
+        Arn:
+          Fn::Sub:
+            - "arn:${AWS::Partition}:ecs:${AWS::Region}:${AWS::AccountId}:service/${ClusterName}/${ServiceName}"
+            - ClusterName: !Ref Cluster
+              ServiceName: !GetAtt ListenerService.Name
+        RoleArn: !GetAtt ScaleUpRole.Arn
+        Input:
+          Fn::Sub:
+            - '{"service":"${ServiceName}","cluster":"${ClusterName}","desiredCount":1}'
+            - ServiceName: !GetAtt ListenerService.Name
+              ClusterName: !Ref Cluster
+
+  ScaleDownSchedule:
+    Type: AWS::Scheduler::Schedule
+    Properties:
+      Name: !Sub "${AWS::StackName}-scale-down"
+      ScheduleExpression: !Ref ScaleDownCron
+      FlexibleTimeWindow:
+        Mode: "OFF"
+      Target:
+        Arn:
+          Fn::Sub:
+            - "arn:${AWS::Partition}:ecs:${AWS::Region}:${AWS::AccountId}:service/${ClusterName}/${ServiceName}"
+            - ClusterName: !Ref Cluster
+              ServiceName: !GetAtt ListenerService.Name
+        RoleArn: !GetAtt ScaleDownRole.Arn
+        Input:
+          Fn::Sub:
+            - '{"service":"${ServiceName}","cluster":"${ClusterName}","desiredCount":0}'
+            - ServiceName: !GetAtt ListenerService.Name
+              ClusterName: !Ref Cluster
+
+  # --- Networking ----------------------------------------------------------
+
+  Vpc:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: 10.80.0.0/16
+      EnableDnsSupport: true
+      EnableDnsHostnames: true
+
+  PublicSubnetA:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref Vpc
+      CidrBlock: 10.80.0.0/24
+      AvailabilityZone: !Select [0, !GetAZs ""]
+      MapPublicIpOnLaunch: true
+
+  PublicSubnetB:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref Vpc
+      CidrBlock: 10.80.1.0/24
+      AvailabilityZone: !Select [1, !GetAZs ""]
+      MapPublicIpOnLaunch: true
+
+  InternetGateway:
+    Type: AWS::EC2::InternetGateway
+
+  VpcGatewayAttachment:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      VpcId: !Ref Vpc
+      InternetGatewayId: !Ref InternetGateway
+
+  PublicRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref Vpc
+
+  PublicDefaultRoute:
+    Type: AWS::EC2::Route
+    DependsOn: VpcGatewayAttachment
+    Properties:
+      RouteTableId: !Ref PublicRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref InternetGateway
+
+  PublicSubnetRouteAssocA:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PublicSubnetA
+      RouteTableId: !Ref PublicRouteTable
+
+  PublicSubnetRouteAssocB:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PublicSubnetB
+      RouteTableId: !Ref PublicRouteTable
+
+  ListenerSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Outbound access for the Fargate listener (WebSockets + API).
+      VpcId: !Ref Vpc
+      SecurityGroupEgress:
+        - {IpProtocol: -1, CidrIp: 0.0.0.0/0, Description: All outbound}
+
+  # --- Roles ---------------------------------------------------------------
+
+  LambdaRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal: {Service: lambda.amazonaws.com}
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: BotAccess
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - dynamodb:PutItem
+                  - dynamodb:GetItem
+                  - dynamodb:UpdateItem
+                  - dynamodb:Query
+                  - dynamodb:Scan
+                  - dynamodb:DescribeTable
+                Resource: !GetAtt StateTable.Arn
+              - Effect: Allow
+                Action:
+                  - sqs:SendMessage
+                  - sqs:ReceiveMessage
+                  - sqs:DeleteMessage
+                  - sqs:GetQueueAttributes
+                Resource: !GetAtt TradeQueue.Arn
+              - Effect: Allow
+                Action: secretsmanager:GetSecretValue
+                Resource: !Ref BotSecret
+              # The scale job sets the listener service's desired count.
+              - Effect: Allow
+                Action:
+                  - ecs:UpdateService
+                  - ecs:DescribeServices
+                Resource: !Sub "arn:${AWS::Partition}:ecs:${AWS::Region}:${AWS::AccountId}:service/${Cluster}/*"
+              # The daily fetch creates the one-shot window schedules.
+              - Effect: Allow
+                Action:
+                  - scheduler:CreateSchedule
+                  - scheduler:DeleteSchedule
+                  - scheduler:GetSchedule
+                Resource: !Sub "arn:${AWS::Partition}:scheduler:${AWS::Region}:${AWS::AccountId}:schedule/${AWS::StackName}*"
+              # Creating a schedule that targets the ECS service means
+              # passing the scheduler's execution role.
+              - Effect: Allow
+                Action: iam:PassRole
+                Resource: !GetAtt ScaleUpRole.Arn
+
+  EcsTaskRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal: {Service: ecs-tasks.amazonaws.com}
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: BotAccess
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - dynamodb:PutItem
+                  - dynamodb:GetItem
+                  - dynamodb:UpdateItem
+                  - dynamodb:Query
+                  - dynamodb:Scan
+                Resource: !GetAtt StateTable.Arn
+              - Effect: Allow
+                Action:
+                  - sqs:SendMessage
+                  - sqs:GetQueueAttributes
+                Resource: !GetAtt TradeQueue.Arn
+              - Effect: Allow
+                Action: secretsmanager:GetSecretValue
+                Resource: !Ref BotSecret
+
+  EcsExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal: {Service: ecs-tasks.amazonaws.com}
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy
+
+  ScaleUpRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal: {Service: scheduler.amazonaws.com}
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: ScaleListener
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action: ecs:UpdateService
+                Resource: !Sub "arn:${AWS::Partition}:ecs:${AWS::Region}:${AWS::AccountId}:service/${Cluster}/*"
+
+  ScaleDownRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal: {Service: scheduler.amazonaws.com}
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: ScaleListener
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action: ecs:UpdateService
+                Resource: !Sub "arn:${AWS::Partition}:ecs:${AWS::Region}:${AWS::AccountId}:service/${Cluster}/*"
+
+Outputs:
+  StateTableName:
+    Value: !Ref StateTable
+  TradeQueueUrl:
+    Value: !Ref TradeQueue
+  DashboardBucketName:
+    Value: !Ref DashboardBucket
+  DashboardApiUrl:
+    Value: !Sub "https://${DashboardApi}.execute-api.${AWS::Region}.amazonaws.com/Prod/dashboard"
+  DashboardUrl:
+    Value: !Sub "https://${DashboardDistribution.DomainName}"
+  ListenerCluster:
+    Value: !Ref Cluster
+  ListenerServiceName:
+    Value: !GetAtt ListenerService.Name

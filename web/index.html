@@ -1,0 +1,90 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>NBA Polymarket Bot</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <span class="dot" id="status-dot"></span>
+      <h1>NBA Polymarket Bot</h1>
+    </div>
+    <div class="controls">
+      <label for="date-input">Date (ET)</label>
+      <input type="date" id="date-input">
+      <label class="checkbox"><input type="checkbox" id="live-toggle"> Live prices</label>
+      <button id="refresh-btn">Refresh</button>
+    </div>
+  </header>
+
+  <section class="summary" id="summary">
+    <div class="stat"><span class="stat-label">Games</span><span class="stat-value" id="s-games">-</span></div>
+    <div class="stat"><span class="stat-label">Armed</span><span class="stat-value" id="s-armed">-</span></div>
+    <div class="stat"><span class="stat-label">Triggered</span><span class="stat-value" id="s-triggered">-</span></div>
+    <div class="stat"><span class="stat-label">Traded</span><span class="stat-value" id="s-traded">-</span></div>
+    <div class="stat"><span class="stat-label">Trades</span><span class="stat-value" id="s-trades">-</span></div>
+    <div class="stat"><span class="stat-label">Realised P&amp;L</span><span class="stat-value" id="s-realised">-</span></div>
+    <div class="stat"><span class="stat-label">Mark-to-market</span><span class="stat-value" id="s-mtm">-</span></div>
+    <div class="stat total"><span class="stat-label">Total P&amp;L</span><span class="stat-value" id="s-total">-</span></div>
+  </section>
+
+  <main>
+    <section class="panel">
+      <h2>Games</h2>
+      <div class="table-wrap">
+        <table id="games-table">
+          <thead>
+            <tr>
+              <th>Tip-off</th>
+              <th>Matchup</th>
+              <th>Records</th>
+              <th>Pre-game</th>
+              <th>Monitored</th>
+              <th>Threshold</th>
+              <th>Trigger</th>
+              <th>Status</th>
+            </tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </section>
+
+    <section class="panel">
+      <h2>Trades</h2>
+      <div class="table-wrap">
+        <table id="trades-table">
+          <thead>
+            <tr>
+              <th>Time</th>
+              <th>Matchup</th>
+              <th>Team</th>
+              <th>Buy</th>
+              <th>Recovery sell</th>
+              <th>Size</th>
+              <th>Edge</th>
+              <th>P&amp;L</th>
+              <th>Status</th>
+            </tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </section>
+
+    <section class="panel">
+      <h2>Activity log</h2>
+      <div class="log" id="log"></div>
+    </section>
+  </main>
+
+  <footer>
+    <span id="footer-note">Loading...</span>
+  </footer>
+
+  <script src="app.js"></script>
+</body>
+</html>

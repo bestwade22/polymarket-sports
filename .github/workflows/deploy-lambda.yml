@@ -1,0 +1,147 @@
+name: Deploy NBA Polymarket Bot
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'src/**'
+      - 'config/**'
+      - 'lambda_handlers/**'
+      - 'infrastructure/**'
+      - 'web/**'
+      - '.github/workflows/deploy-lambda.yml'
+      - 'requirements.txt'
+      - 'scripts/**'
+  workflow_dispatch:
+
+permissions:
+  id-token: write
+  contents: read
+
+env:
+  AWS_REGION: ${{ vars.AWS_REGION || 'ap-east-1' }}
+  ECR_REPOSITORY: polymarket-sports-bot
+  STACK_NAME: polymarket-sports
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION || 'ap-east-1' }}
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install SAM CLI
+        run: pip install aws-sam-cli
+
+      - name: Ensure the ECR repository exists
+        run: |
+          if ! aws ecr describe-repositories \
+            --repository-names "$ECR_REPOSITORY" >/dev/null 2>&1; then
+            aws ecr create-repository \
+              --repository-name "$ECR_REPOSITORY" \
+              --image-scanning-configuration scanOnPush=true >/dev/null
+            echo "Created ECR repository $ECR_REPOSITORY"
+          else
+            echo "ECR repository $ECR_REPOSITORY already exists"
+          fi
+
+      # One image backs all four Lambda functions and the Fargate listener,
+      # so the code is built once and pushed to ECR twice: the Lambda base
+      # image for the functions, the plain image for the ECS task.
+      - name: Build and push the container images
+        env:
+          IMAGE_TAG: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          ACCOUNT_ID="$(aws sts get-caller-identity --query Account --output text)"
+          REGISTRY="${ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com"
+          IMAGE_URI="${REGISTRY}/${ECR_REPOSITORY}"
+
+          aws ecr get-login-password \
+            --region "$AWS_REGION" \
+            | docker login --username AWS --password-stdin "$REGISTRY"
+
+          for target in lambda fargate; do
+            docker build \
+              --platform linux/arm64 \
+              --target "$target" \
+              -t "${IMAGE_URI}:${IMAGE_TAG}-${target}" \
+              -t "${IMAGE_URI}:${target}" \
+              -f infrastructure/Dockerfile .
+            docker push "${IMAGE_URI}:${IMAGE_TAG}-${target}"
+            docker push "${IMAGE_URI}:${target}"
+          done
+
+          echo "IMAGE_URI=${IMAGE_URI}" >> "$GITHUB_ENV"
+          echo "IMAGE_TAG=${IMAGE_TAG}" >> "$GITHUB_ENV"
+
+      - name: SAM deploy
+        working-directory: infrastructure
+        env:
+          CLOB_PRIVATE_KEY: ${{ secrets.CLOB_PRIVATE_KEY }}
+          DEPOSIT_WALLET_ADDRESS: ${{ secrets.DEPOSIT_WALLET_ADDRESS }}
+          API_NINJAS_KEY: ${{ secrets.API_NINJAS_KEY }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: |
+          sam deploy \
+            --stack-name "$STACK_NAME" \
+            --no-confirm-changeset \
+            --no-fail-on-empty-changeset \
+            --capabilities CAPABILITY_IAM CAPABILITY_NAMED_IAM \
+            --parameter-overrides \
+              "ImageUri=${IMAGE_URI}" \
+              "ImageTag=${IMAGE_TAG}-lambda" \
+              "FargateImageUri=${IMAGE_URI}" \
+              "FargateImageTag=${IMAGE_TAG}-fargate" \
+              "PrivateKey=${CLOB_PRIVATE_KEY}" \
+              "DepositWalletAddress=${DEPOSIT_WALLET_ADDRESS}" \
+              "ApiNinjasKey=${API_NINJAS_KEY}" \
+              "TelegramBotToken=${TELEGRAM_BOT_TOKEN}" \
+              "TelegramChatId=${TELEGRAM_CHAT_ID}" \
+              "DryRun=true"
+
+      # SAM image deploys leave old digests in ECR; the lifecycle policy
+      # expires them.
+      - name: Apply ECR lifecycle policies
+        run: bash scripts/apply_ecr_lifecycle.sh polymarket-sports
+
+      - name: Publish the static dashboard
+        run: |
+          set -euo pipefail
+          BUCKET="$(aws cloudformation describe-stacks \
+            --stack-name "$STACK_NAME" \
+            --query "Stacks[0].Outputs[?OutputKey=='DashboardBucketName'].OutputValue" \
+            --output text)"
+          if [[ -z "$BUCKET" || "$BUCKET" == "None" ]]; then
+            echo "No dashboard bucket in the stack outputs; skipping."
+            exit 0
+          fi
+          aws s3 sync web/ "s3://${BUCKET}/" --delete --exclude ".*"
+
+      - name: Diagnose CloudFormation failure
+        if: failure()
+        run: |
+          for stack in aws-sam-cli-managed-default "$STACK_NAME"; do
+            echo "=== Stack status: $stack ==="
+            aws cloudformation describe-stacks \
+              --stack-name "$stack" \
+              --query 'Stacks[0].[StackName,StackStatus]' \
+              --output table 2>/dev/null || echo "(stack $stack not found)"
+            echo "=== Recent events: $stack ==="
+            aws cloudformation describe-stack-events \
+              --stack-name "$stack" \
+              --max-items 20 \
+              --query 'StackEvents[].[Timestamp,ResourceStatus,LogicalResourceId,ResourceStatusReason]' \
+              --output table 2>/dev/null || true
+          done
