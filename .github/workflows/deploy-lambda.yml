@@ -29,6 +29,44 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # Prints the role's real trust policy and the token's real `sub`
+      # claim. When AssumeRoleWithWebIdentity is denied, one of these two
+      # does not match the other - this step shows which.
+      - name: Diagnose OIDC trust policy
+        if: always()
+        env:
+          ROLE_ARN: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+        run: |
+          set +e
+          echo "=== Role ARN variable ==="
+          echo "${ROLE_ARN:-<EMPTY - AWS_DEPLOY_ROLE_ARN is not set>}"
+          echo
+
+          if [ -n "${ROLE_ARN}" ]; then
+            echo "=== Role exists? ==="
+            ROLE_NAME="${ROLE_ARN##*/}"
+            aws iam get-role --role-name "$ROLE_NAME" \
+              --query 'Role.Arn' --output json 2>&1
+            echo
+
+            echo "=== Role trust policy (as applied in AWS) ==="
+            aws iam get-role --role-name "$ROLE_NAME" \
+              --query 'Role.AssumeRolePolicyDocument' --output json 2>&1
+            echo
+          fi
+
+          echo "=== Decoded OIDC token claims ==="
+          # The token's `sub` is what the trust policy's sub condition
+          # must match. Decoding it here avoids guessing at the format.
+          TOKEN="$(curl -sS -H "Authorization: bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}" \
+            "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=sts.amazonaws.com" \
+            | python3 -c 'import json,sys; print(json.load(sys.stdin).get("value",""))')"
+          if [ -n "$TOKEN" ]; then
+            printf '%s' "$TOKEN" | python3 -c "import base64,json,sys; p=sys.stdin.read().split('.')[1]; p+='='*(-len(p)%4); print(json.dumps(json.loads(base64.urlsafe_b64decode(p)),indent=2))" 2>/dev/null || echo "(could not decode token)"
+          else
+            echo "(could not fetch OIDC token)"
+          fi
+
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
         with:

@@ -14,6 +14,16 @@ Replace placeholders:
 
 Policy JSON files live in [`infrastructure/iam/`](../infrastructure/iam/).
 
+**They are already filled in with the real values for this account.** Copy
+them verbatim - do not retype them, and do not leave `ACCOUNT_ID` / `OWNER`
+in place:
+
+| Placeholder | Value for this account |
+|-------------|------------------------|
+| `ACCOUNT_ID` | `830430162436` |
+| `OWNER` | `bestwade22` |
+| `REPO` | `polymarket-sports` |
+
 ---
 
 ## Why the secret is reused
@@ -184,6 +194,63 @@ Clean up in the console **before** re-running deploy:
 
 The workflow's own `Diagnose CloudFormation failure` step prints the stack
 status and the last 20 stack events, which is usually enough on its own.
+
+---
+
+## Troubleshooting OIDC: "Not authorized to perform sts:AssumeRoleWithWebIdentity"
+
+This error means GitHub issued a web identity token, but AWS refused to let
+it become a session. It is **not** a permissions-policy problem — the
+permissions policy is not consulted during role assumption. Only the **trust
+policy** is.
+
+The workflow's **"Diagnose OIDC trust policy"** step runs before the
+credential step and prints three things:
+
+| Output | What it tells you |
+|--------|-------------------|
+| `Role ARN variable` | whether `AWS_DEPLOY_ROLE_ARN` is set at the repo level |
+| `Role trust policy` | the trust policy **as AWS actually has it** |
+| `Decoded OIDC token claims` | the real `sub` and `aud` in the token |
+
+The trust policy's `sub` condition and the token's `sub` claim must match
+exactly. The token's `sub` for a push to `main` on this repo is:
+
+```
+repo:bestwade22/polymarket-sports:ref:refs/heads/main
+```
+
+Compare that against the trust policy in the log.
+
+The usual causes, in order of likelihood:
+
+1. **Placeholders left in the trust policy.** `ACCOUNT_ID` and `OWNER` are
+   placeholders. A trust policy still containing
+   `arn:aws:iam::ACCOUNT_ID:oidc-provider/...` or
+   `repo:OWNER/polymarket-sports:...` never matches anything. Copy
+   [`github-deploy-trust.json`](../infrastructure/iam/github-deploy-trust.json)
+   as-is — it already has the real values.
+
+2. **The console wizard dropped the repository segment.** When a role is
+   created through the Web identity wizard, AWS can generate
+   `repo:bestwade22:ref:refs/heads/main` — no `/polymarket-sports`. The
+   real subject includes the repo name, so it never matches. Always
+   overwrite the wizard's policy with the JSON file.
+
+3. **The role does not exist.** STS returns the same generic message for a
+   missing role as for a bad trust policy, so it cannot tell you which.
+   Check IAM -> Roles for `github-polymarket-sports-deploy`.
+
+4. **The provider ARN does not match.** The `Principal.Federated` must be
+   `arn:aws:iam::830430162436:oidc-provider/token.actions.githubusercontent.com`
+   — the account ID must match the one in the role ARN. The provider must
+   already exist under IAM -> Identity providers (it does, for
+   `polymarket-trader`).
+
+5. **The variable is set at the wrong level.** For a personal account,
+   `github.com/settings/variables/actions` applies to *every* repository
+   including `polymarket-trader`. Set it on the repository instead:
+   `github.com/bestwade22/polymarket-sports/settings/variables/actions`.
 
 ---
 
