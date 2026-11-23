@@ -215,14 +215,33 @@ it become a session. It is **not** a permissions-policy problem — the
 permissions policy is not consulted during role assumption. Only the **trust
 policy** is.
 
-The workflow's **"Diagnose OIDC trust policy"** step runs before the
-credential step and prints three things:
+Two workflow steps diagnose it, and both run even when the deploy fails:
 
-| Output | What it tells you |
-|--------|-------------------|
-| `Role ARN variable` | whether `AWS_DEPLOY_ROLE_ARN` is set at the repo level |
-| `Role trust policy` | the trust policy **as AWS actually has it** |
-| `Decoded OIDC token claims` | the real `sub` and `aud` in the token |
+| Step | What it does |
+|------|--------------|
+| **Diagnose OIDC trust policy** | Runs [`scripts/diagnose_oidc.py`](../scripts/diagnose_oidc.py), which reads the role's trust policy as AWS actually stores it, decodes the OIDC token, and compares the two. It names the exact condition that failed. |
+| **Probe STS AssumeRoleWithWebIdentity** | Calls STS directly, so the log shows STS's own error message rather than the action's generic wrapper. |
+
+The diagnostic script prints a verdict like:
+
+```
+VERDICT: the trust policy does not authorise this token.
+
+1. The trusted principal still contains a placeholder:
+        arn:aws:iam::ACCOUNT_ID:oidc-provider/token.actions.githubusercontent.com
+    >>> Replace ACCOUNT_ID with 830430162436 before applying the trust policy.
+
+2. The trust policy's sub condition does not match the token's subject.
+        token     : repo:bestwade22/polymarket-sports:ref:refs/heads/main
+        condition : ['repo:OWNER/polymarket-sports:ref:refs/heads/main']
+    >>> Put the token subject above into the trust policy verbatim.
+```
+
+You can run the same check locally once the role exists:
+
+```
+python3 scripts/diagnose_oidc.py arn:aws:iam::830430162436:role/github-polymarket-sports-deploy
+```
 
 The trust policy's `sub` condition and the token's `sub` claim must match
 exactly. The token's `sub` for a push to `main` on this repo is:
@@ -230,8 +249,6 @@ exactly. The token's `sub` for a push to `main` on this repo is:
 ```
 repo:bestwade22/polymarket-sports:ref:refs/heads/main
 ```
-
-Compare that against the trust policy in the log.
 
 The usual causes, in order of likelihood:
 

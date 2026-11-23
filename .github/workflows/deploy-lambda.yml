@@ -29,49 +29,69 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # Prints the role's real trust policy and the token's real `sub`
-      # claim. When AssumeRoleWithWebIdentity is denied, one of these two
-      # does not match the other - this step shows which.
+      # Compares the role's real trust policy against the OIDC token's
+      # real claims and names the exact condition that failed. Without
+      # this, a trust policy mismatch and a missing role produce the
+      # same opaque STS error.
       - name: Diagnose OIDC trust policy
         if: always()
         env:
           ROLE_ARN: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
         run: |
           set +e
-          echo "=== Role ARN variable ==="
-          echo "${ROLE_ARN:-<EMPTY - AWS_DEPLOY_ROLE_ARN is not set>}"
-          echo
-
-          if [ -n "${ROLE_ARN}" ]; then
-            echo "=== Role exists? ==="
-            ROLE_NAME="${ROLE_ARN##*/}"
-            aws iam get-role --role-name "$ROLE_NAME" \
-              --query 'Role.Arn' --output json 2>&1
-            echo
-
-            echo "=== Role trust policy (as applied in AWS) ==="
-            aws iam get-role --role-name "$ROLE_NAME" \
-              --query 'Role.AssumeRolePolicyDocument' --output json 2>&1
-            echo
+          if [ -z "${ROLE_ARN}" ]; then
+            echo "AWS_DEPLOY_ROLE_ARN is not set on this repository."
+            echo "Set it under Settings -> Secrets and variables -> Actions -> Variables."
+            exit 0
           fi
-
-          echo "=== Decoded OIDC token claims ==="
-          # The token's `sub` is what the trust policy's sub condition
-          # must match. Decoding it here avoids guessing at the format.
-          TOKEN="$(curl -sS -H "Authorization: bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}" \
-            "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=sts.amazonaws.com" \
-            | python3 -c 'import json,sys; print(json.load(sys.stdin).get("value",""))')"
-          if [ -n "$TOKEN" ]; then
-            printf '%s' "$TOKEN" | python3 -c "import base64,json,sys; p=sys.stdin.read().split('.')[1]; p+='='*(-len(p)%4); print(json.dumps(json.loads(base64.urlsafe_b64decode(p)),indent=2))" 2>/dev/null || echo "(could not decode token)"
-          else
-            echo "(could not fetch OIDC token)"
-          fi
+          python3 scripts/diagnose_oidc.py "$ROLE_ARN"
 
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
         with:
           role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
           aws-region: ${{ vars.AWS_REGION || 'ap-east-1' }}
+
+      # The configure-aws-credentials action reports every OIDC failure
+      # as "Not authorized to perform sts:AssumeRoleWithWebIdentity".
+      # Calling STS directly surfaces the real error, which distinguishes
+      # a bad trust policy from a missing role or an unknown provider.
+      - name: Probe STS AssumeRoleWithWebIdentity
+        if: always()
+        env:
+          ROLE_ARN: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+        run: |
+          set +e
+          if [ -z "${ROLE_ARN}" ]; then
+            echo "AWS_DEPLOY_ROLE_ARN is not set - skipping the STS probe."
+            exit 0
+          fi
+
+          echo "=== Requesting an OIDC token from GitHub ==="
+          TOKEN="$(curl -sS -H "Authorization: bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}" \
+            "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=sts.amazonaws.com" \
+            | python3 -c 'import json,sys; print(json.load(sys.stdin).get("value",""))' 2>/dev/null)"
+          if [ -z "$TOKEN" ]; then
+            echo "Could not get an OIDC token. Check the workflow's id-token: write permission."
+            exit 0
+          fi
+          echo "token: ${TOKEN:0:24}...(truncated)"
+          echo
+
+          echo "=== STS AssumeRoleWithWebIdentity ==="
+          aws sts assume-role-with-web-identity \
+            --role-arn "$ROLE_ARN" \
+            --role-session-name "gh-actions-deploy" \
+            --web-identity-token "$TOKEN" \
+            --duration-seconds 900 2>&1
+          echo "(exit code: $?)"
+          echo
+          echo "Common causes, in order of likelihood:"
+          echo "  1. The trust policy still contains ACCOUNT_ID / OWNER placeholders."
+          echo "  2. The trust policy's sub condition does not include the repository:"
+          echo "     repo:OWNER/REPO:ref:refs/heads/main"
+          echo "  3. The role name in AWS_DEPLOY_ROLE_ARN does not exist."
+          echo "  4. The OIDC provider is not registered in this account."
 
       - name: Set up Python
         uses: actions/setup-python@v5
