@@ -19,6 +19,7 @@ import base64
 import fnmatch
 import json
 import os
+import re
 import subprocess
 import sys
 import urllib.request
@@ -266,6 +267,18 @@ def main() -> int:
                 f"        condition : {sub_conditions}\n"
                 "    >>> Put the token subject above into the trust policy verbatim."
             )
+            # GitHub now issues subjects that embed the numeric owner and
+            # repository ids: repo:owner@ID/repo@ID:ref:refs/heads/main.
+            # A condition written in the older repo:owner/repo:ref form
+            # never matches those, and the difference is easy to miss.
+            if re.search(r"@\d+", subject):
+                problems.append(
+                    "This token's subject carries GitHub's numeric id form.\n"
+                    f"        actual   : {subject}\n"
+                    "    >>> A condition like repo:owner/repo:ref:refs/heads/main\n"
+                    "    >>> will never match it. Use a wildcard instead:\n"
+                    "    >>>   repo:bestwade22*polymarket-sports*:ref:refs/heads/main"
+                )
         for pattern in sub_conditions:
             if "OWNER" in pattern or "ACCOUNT_ID" in pattern or "REPO" in pattern:
                 problems.append(

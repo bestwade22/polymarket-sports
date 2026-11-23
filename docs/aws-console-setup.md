@@ -243,12 +243,30 @@ You can run the same check locally once the role exists:
 python3 scripts/diagnose_oidc.py arn:aws:iam::830430162436:role/github-polymarket-sports-deploy
 ```
 
-The trust policy's `sub` condition and the token's `sub` claim must match
-exactly. The token's `sub` for a push to `main` on this repo is:
+### The subject format GitHub now issues
+
+GitHub changed the `sub` claim to embed the numeric owner and repository
+ids. The subject for a push to `main` on this repo is:
 
 ```
-repo:bestwade22/polymarket-sports:ref:refs/heads/main
+repo:bestwade22@31284603/polymarket-sports@1469031647:ref:refs/heads/main
 ```
+
+A `sub` condition written in the older `repo:owner/repo:ref:refs/heads/main`
+form **never matches** that, and the difference is easy to overlook because
+both look like the same repository.
+
+The trust policy therefore uses a wildcard:
+
+```
+repo:bestwade22*polymarket-sports*:ref:refs/heads/main
+```
+
+which matches the numeric-id form and the older form alike, while still
+rejecting other repositories and other branches.
+
+**This affects `polymarket-trader` too.** Its trust policy uses the old
+form, so its next deploy will fail the same way. Update it the same way.
 
 The usual causes, in order of likelihood:
 

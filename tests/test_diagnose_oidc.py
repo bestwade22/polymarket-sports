@@ -34,6 +34,16 @@ def make_token(claims: dict) -> str:
 TOKEN_CLAIMS = {
     "iss": "https://token.actions.githubusercontent.com",
     "aud": "sts.amazonaws.com",
+    "sub": "repo:bestwade22@31284603/polymarket-sports@1469031647:ref:refs/heads/main",
+    "ref": "refs/heads/main",
+}
+
+# GitHub used to issue repo:owner/repo:ref subjects. It now embeds the
+# numeric owner and repository ids, and a trust policy written in the
+# old form stops matching.
+LEGACY_TOKEN_CLAIMS = {
+    "iss": "https://token.actions.githubusercontent.com",
+    "aud": "sts.amazonaws.com",
     "sub": "repo:bestwade22/polymarket-sports:ref:refs/heads/main",
     "ref": "refs/heads/main",
 }
@@ -56,7 +66,7 @@ CORRECT_TRUST = {
                 },
                 "StringLike": {
                     "token.actions.githubusercontent.com:sub": (
-                        "repo:bestwade22/polymarket-sports:ref:refs/heads/main"
+                        "repo:bestwade22*polymarket-sports*:ref:refs/heads/main"
                     )
                 },
             },
@@ -99,6 +109,43 @@ class TestSubMatches:
         subject = "repo:bestwade22/polymarket-sports:ref:refs/heads/main"
         assert not diagnose_oidc._sub_matches(pattern, subject)
 
+    def test_legacy_pattern_does_not_match_the_numeric_id_subject(self):
+        """The subject format changed - the old condition must not match."""
+        pattern = "repo:bestwade22/polymarket-sports:ref:refs/heads/main"
+        subject = (
+            "repo:bestwade22@31284603/polymarket-sports@1469031647:"
+            "ref:refs/heads/main"
+        )
+        assert not diagnose_oidc._sub_matches(pattern, subject)
+
+    def test_wildcard_matches_the_numeric_id_subject(self):
+        pattern = "repo:bestwade22*polymarket-sports*:ref:refs/heads/main"
+        subject = (
+            "repo:bestwade22@31284603/polymarket-sports@1469031647:"
+            "ref:refs/heads/main"
+        )
+        assert diagnose_oidc._sub_matches(pattern, subject)
+
+    def test_wildcard_matches_the_legacy_subject(self):
+        pattern = "repo:bestwade22*polymarket-sports*:ref:refs/heads/main"
+        subject = "repo:bestwade22/polymarket-sports:ref:refs/heads/main"
+        assert diagnose_oidc._sub_matches(pattern, subject)
+
+    def test_wildcard_still_rejects_another_repository(self):
+        pattern = "repo:bestwade22*polymarket-sports*:ref:refs/heads/main"
+        subject = (
+            "repo:bestwade22@31284603/polymarket-trader@123:ref:refs/heads/main"
+        )
+        assert not diagnose_oidc._sub_matches(pattern, subject)
+
+    def test_wildcard_still_rejects_another_branch(self):
+        pattern = "repo:bestwade22*polymarket-sports*:ref:refs/heads/main"
+        subject = (
+            "repo:bestwade22@31284603/polymarket-sports@1469031647:"
+            "ref:refs/heads/dev"
+        )
+        assert not diagnose_oidc._sub_matches(pattern, subject)
+
     def test_empty_subject_never_matches(self):
         assert not diagnose_oidc._sub_matches("repo:bestwade22/x", "")
 
@@ -118,7 +165,7 @@ class TestTrustExtraction:
     def test_collects_condition_values(self):
         conditions = diagnose_oidc._trust_conditions(CORRECT_TRUST)
         assert conditions["token.actions.githubusercontent.com:sub"] == [
-            "repo:bestwade22/polymarket-sports:ref:refs/heads/main"
+            "repo:bestwade22*polymarket-sports*:ref:refs/heads/main"
         ]
         assert conditions["token.actions.githubusercontent.com:aud"] == [
             "sts.amazonaws.com"
@@ -234,3 +281,36 @@ class TestEndToEnd:
         result = self._run(self.ROLE, make_token(claims))
         assert "sts.amazonaws.com audience" in result.stdout
         assert result.returncode == 1
+
+    def test_legacy_condition_is_reported_against_the_numeric_id_subject(
+        self, mock_aws
+    ):
+        """The real failure: an old-format condition against a new token."""
+        write_role, _ = mock_aws
+        legacy = json.loads(json.dumps(CORRECT_TRUST))
+        legacy["Statement"][0]["Condition"]["StringLike"][
+            "token.actions.githubusercontent.com:sub"
+        ] = "repo:bestwade22/polymarket-sports:ref:refs/heads/main"
+        write_role(legacy)
+        result = self._run(self.ROLE, make_token(TOKEN_CLAIMS))
+        assert "DOES NOT MATCH" in result.stdout
+        assert "numeric id form" in result.stdout
+        assert result.returncode == 1
+
+    def test_the_shipped_trust_policy_matches_the_real_token(self, mock_aws):
+        """The policy in the repo must accept the token GitHub issues."""
+        write_role, _ = mock_aws
+        shipped = json.loads(
+            (
+                Path(__file__).resolve().parents[1]
+                / "infrastructure"
+                / "iam"
+                / "github-deploy-trust.json"
+            ).read_text()
+        )
+        write_role(shipped)
+        result = self._run(self.ROLE, make_token(TOKEN_CLAIMS))
+        assert "VERDICT: the trust policy appears to authorise this token." in (
+            result.stdout
+        )
+        assert result.returncode == 0
