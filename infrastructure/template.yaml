@@ -431,6 +431,12 @@ Resources:
       Memory: "512"
       ExecutionRoleArn: !GetAtt EcsTaskRole.Arn
       TaskRoleArn: !GetAtt EcsTaskRole.Arn
+      # The listener image is built for ARM64, so the task has to request
+      # the ARM64 platform. Without this ECS looks for an x86_64 task
+      # definition and the container fails to start.
+      RuntimePlatform:
+        CpuArchitecture: ARM64
+        OperatingSystemFamily: LINUX
       ContainerDefinitions:
         - Name: listener
           Image: !Sub "${FargateImageUri}:${FargateImageTag}"
