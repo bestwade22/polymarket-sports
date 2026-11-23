@@ -111,7 +111,7 @@ needs and that stack does not:
 | `ec2:*` (VPC, subnet, IGW, route table, security group) | The Fargate listener needs a VPC with public subnets |
 | `ecs:*` | The ECS cluster, service and task definition |
 | `cloudfront:*` | The dashboard distribution, OAC and origin request policy |
-| `apigateway:*` | The dashboard API |
+| `execute-api:*` | The dashboard API |
 | `logs:PutRetentionPolicy` | The listener log group's 30-day retention |
 | `s3:GetBucketWebsite` / `s3:PutBucketWebsite` | The dashboard bucket's static site config |
 
@@ -121,6 +121,17 @@ Actions often missing on a minimal policy:
 - `s3:DeleteBucket` — rollback/cleanup if deploy fails
 - `cloudformation:ListStacks` — SAM CLI health checks
 - `iam:PassRole` — SAM passes the Lambda/ECS execution roles to the services
+
+### Service prefixes that are easy to get wrong
+
+The console validates every action against the Service Authorization
+Reference and rejects the whole policy if one is unknown. Two prefixes are
+commonly mis-typed:
+
+| Service | Correct prefix | Common mistake |
+|---------|----------------|----------------|
+| API Gateway | `execute-api:` | `apigateway:` — that is the *API* name, not the IAM prefix. The console also rejects `apigateway:GET`, `apigateway:POST` and friends; those are not IAM actions. |
+| CloudFront | `cloudfront:` | `cloudfront:DescribeDistribution` — there is no such action. The read side is `GetDistribution` / `GetDistributionConfig`. |
 
 ---
 

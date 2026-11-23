@@ -238,19 +238,26 @@
         "cloudfront:UpdateDistribution",
         "cloudfront:DeleteDistribution",
         "cloudfront:GetDistribution",
-        "cloudfront:DescribeDistribution",
+        "cloudfront:GetDistributionConfig",
         "cloudfront:ListDistributions",
         "cloudfront:TagResource",
         "cloudfront:UntagResource",
+        "cloudfront:ListTagsForResource",
         "cloudfront:CreateInvalidation",
+        "cloudfront:GetInvalidation",
+        "cloudfront:ListInvalidations",
         "cloudfront:CreateOriginAccessControl",
         "cloudfront:GetOriginAccessControl",
+        "cloudfront:GetOriginAccessControlConfig",
         "cloudfront:UpdateOriginAccessControl",
         "cloudfront:DeleteOriginAccessControl",
+        "cloudfront:ListOriginAccessControls",
         "cloudfront:CreateOriginRequestPolicy",
         "cloudfront:GetOriginRequestPolicy",
+        "cloudfront:GetOriginRequestPolicyConfig",
         "cloudfront:UpdateOriginRequestPolicy",
-        "cloudfront:DeleteOriginRequestPolicy"
+        "cloudfront:DeleteOriginRequestPolicy",
+        "cloudfront:ListOriginRequestPolicies"
       ],
       "Resource": "*"
     },
@@ -258,11 +265,8 @@
       "Sid": "ApiGateway",
       "Effect": "Allow",
       "Action": [
-        "apigateway:GET",
-        "apigateway:POST",
-        "apigateway:PUT",
-        "apigateway:PATCH",
-        "apigateway:DELETE"
+        "execute-api:Invoke",
+        "execute-api:ManageConnections"
       ],
       "Resource": "*"
     }
