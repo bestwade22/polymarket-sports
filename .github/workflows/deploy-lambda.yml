@@ -189,23 +189,51 @@ jobs:
           # be pasted into GitHub.
           BOT_SECRET_ARN: ${{ vars.BOT_SECRET_ARN }}
         run: |
+          set -euo pipefail
+
+          # SAM rejects an override whose value is empty ("PrivateKey= is
+          # not a valid format"), so only the parameters that actually
+          # have a value are passed. When BOT_SECRET_ARN is set the stack
+          # reads the wallet credentials from that existing secret and
+          # ignores the credential parameters entirely, so they are
+          # correctly absent.
+          PARAMS=(
+            "ImageUri=${IMAGE_URI}"
+            "ImageTag=${IMAGE_TAG}-lambda"
+            "FargateImageUri=${IMAGE_URI}"
+            "FargateImageTag=${IMAGE_TAG}-fargate"
+            "DryRun=true"
+          )
+
+          # Name -> value pairs for the optional parameters.
+          add_if_set() {
+            local name="$1" value="$2"
+            if [ -n "$value" ]; then
+              PARAMS+=("${name}=${value}")
+            else
+              echo "not set, skipping: ${name}"
+            fi
+          }
+
+          add_if_set "BotSecretArn"          "${BOT_SECRET_ARN}"
+          add_if_set "PrivateKey"           "${CLOB_PRIVATE_KEY}"
+          add_if_set "DepositWalletAddress" "${DEPOSIT_WALLET_ADDRESS}"
+          add_if_set "ApiNinjasKey"         "${API_NINJAS_KEY}"
+          add_if_set "TelegramBotToken"     "${TELEGRAM_BOT_TOKEN}"
+          add_if_set "TelegramChatId"       "${TELEGRAM_CHAT_ID}"
+
+          if [ -z "${BOT_SECRET_ARN}" ] && [ -z "${CLOB_PRIVATE_KEY}" ]; then
+            echo "Neither BOT_SECRET_ARN nor CLOB_PRIVATE_KEY is set, so the"
+            echo "stack has no wallet credentials. Set one of them."
+            exit 1
+          fi
+
           sam deploy \
             --stack-name "$STACK_NAME" \
             --no-confirm-changeset \
             --no-fail-on-empty-changeset \
             --capabilities CAPABILITY_IAM CAPABILITY_NAMED_IAM \
-            --parameter-overrides \
-              "ImageUri=${IMAGE_URI}" \
-              "ImageTag=${IMAGE_TAG}-lambda" \
-              "FargateImageUri=${IMAGE_URI}" \
-              "FargateImageTag=${IMAGE_TAG}-fargate" \
-              "PrivateKey=${CLOB_PRIVATE_KEY}" \
-              "DepositWalletAddress=${DEPOSIT_WALLET_ADDRESS}" \
-              "ApiNinjasKey=${API_NINJAS_KEY}" \
-              "TelegramBotToken=${TELEGRAM_BOT_TOKEN}" \
-              "TelegramChatId=${TELEGRAM_CHAT_ID}" \
-              "BotSecretArn=${BOT_SECRET_ARN}" \
-              "DryRun=true"
+            --parameter-overrides "${PARAMS[@]}"
 
       # SAM image deploys leave old digests in ECR; the lifecycle policy
       # expires them.

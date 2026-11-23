@@ -18,7 +18,11 @@ Parameters:
   PrivateKey:
     Type: String
     NoEcho: true
-    Description: CLOB signing key. Stored in Secrets Manager, never in this template.
+    Default: ""
+    Description: >-
+      CLOB signing key. Stored in Secrets Manager, never in this template.
+      Only used when the stack creates its own secret; ignored when
+      BotSecretArn is supplied, so it may be left empty in that case.
   DepositWalletAddress:
     Type: String
     Default: ""
