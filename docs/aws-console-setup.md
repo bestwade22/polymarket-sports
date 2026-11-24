@@ -103,6 +103,12 @@ arn:aws:iam::ACCOUNT_ID:role/github-polymarket-sports-deploy
 3. **Review policy** -> name: `github-polymarket-sports-deploy-policy` ->
    **Create policy**
 
+> **Re-apply after every change to the policy file.** This file is the
+> source of truth for the role's permissions, but editing it in the repo
+> does nothing until it is pasted into the console again. If a deploy
+> fails with `AccessDenied` for a service that the policy file already
+> covers, the role in AWS is out of date — re-paste it.
+
 This policy is the `polymarket-trader` one plus the permissions this stack
 needs and that stack does not:
 
@@ -110,6 +116,9 @@ needs and that stack does not:
 |-------|-----|
 | `ec2:*` (VPC, subnet, IGW, route table, security group) | The Fargate listener needs a VPC with public subnets |
 | `ecs:*` | The ECS cluster, service and task definition |
+| `sqs:*` | The trade queue and its dead-letter queue |
+| `dynamodb:*` | The `SportsBotState` table |
+| `events:*` | The EventBridge rules that trigger the scheduled Lambdas |
 | `cloudfront:*` | The dashboard distribution, OAC and origin request policy |
 | `execute-api:*` | The dashboard API |
 | `logs:PutRetentionPolicy` | The listener log group's 30-day retention |
@@ -121,6 +130,16 @@ Actions often missing on a minimal policy:
 - `s3:DeleteBucket` — rollback/cleanup if deploy fails
 - `cloudformation:ListStacks` — SAM CLI health checks
 - `iam:PassRole` — SAM passes the Lambda/ECS execution roles to the services
+- `iam:CreateServiceLinkedRole` — ECS creates `AWSServiceRoleForECS` on the
+  first `CreateCluster` call. Without it the cluster fails with *"Unable to
+  assume the service linked role"*. The only three valid service-linked-role
+  actions are `CreateServiceLinkedRole`, `DeleteServiceLinkedRole` and
+  `GetServiceLinkedRoleDeletionStatus` — there is no `ListServiceLinkedRoles`
+  (the closest real action is `ListServiceLinkedRoleInstances`), and the
+  console rejects the entire policy if any action does not exist.
+- `sqs:CreateQueue` — the trade queue and DLQ
+- `dynamodb:CreateTable` — the state table
+- `events:PutRule` / `events:PutTargets` — the Lambda schedule rules
 
 ### Service prefixes that are easy to get wrong
 

@@ -124,7 +124,10 @@
         "iam:DeletePolicyVersion",
         "iam:ListRolePolicies",
         "iam:ListAttachedRolePolicies",
-        "iam:UpdateAssumeRolePolicy"
+        "iam:UpdateAssumeRolePolicy",
+        "iam:CreateServiceLinkedRole",
+        "iam:DeleteServiceLinkedRole",
+        "iam:GetServiceLinkedRoleDeletionStatus"
       ],
       "Resource": "*"
     },
@@ -202,6 +205,65 @@
         "ec2:CreateTags",
         "ec2:DeleteTags",
         "ec2:DescribeTags"
+      ],
+      "Resource": "*"
+    },
+    {
+      "Sid": "SQS",
+      "Effect": "Allow",
+      "Action": [
+        "sqs:CreateQueue",
+        "sqs:DeleteQueue",
+        "sqs:GetQueueUrl",
+        "sqs:GetQueueAttributes",
+        "sqs:ListQueues",
+        "sqs:SetQueueAttributes",
+        "sqs:TagQueue",
+        "sqs:UntagQueue",
+        "sqs:AddPermission",
+        "sqs:RemovePermission",
+        "sqs:SendMessage",
+        "sqs:ReceiveMessage",
+        "sqs:DeleteMessage",
+        "sqs:PurgeQueue"
+      ],
+      "Resource": "*"
+    },
+    {
+      "Sid": "DynamoDB",
+      "Effect": "Allow",
+      "Action": [
+        "dynamodb:CreateTable",
+        "dynamodb:DeleteTable",
+        "dynamodb:DescribeTable",
+        "dynamodb:UpdateTable",
+        "dynamodb:UpdateTimeToLive",
+        "dynamodb:DescribeTimeToLive",
+        "dynamodb:ListTables",
+        "dynamodb:TagResource",
+        "dynamodb:UntagResource",
+        "dynamodb:DescribeContinuousBackups",
+        "dynamodb:UpdateContinuousBackups"
+      ],
+      "Resource": "*"
+    },
+    {
+      "Sid": "EventBridgeRules",
+      "Effect": "Allow",
+      "Action": [
+        "events:PutRule",
+        "events:PutTargets",
+        "events:RemoveTargets",
+        "events:DeleteRule",
+        "events:DescribeRule",
+        "events:ListRuleNamesByTarget",
+        "events:ListTargetsByRule",
+        "events:ListRules",
+        "events:TagResource",
+        "events:UntagResource",
+        "events:PutPermission",
+        "events:RemovePermission",
+        "events:TestEventPattern"
       ],
       "Resource": "*"
     },
