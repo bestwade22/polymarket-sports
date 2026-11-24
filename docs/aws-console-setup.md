@@ -230,7 +230,34 @@ Both are required by this template and are also recorded in
   pushed to ECR by the workflow's own buildx/QEMU step; the `ImageUri` /
   `ImageTag` parameters carry the resulting URI to CloudFormation.
 
-### If deploy failed before (ROLLBACK_FAILED)
+### If the stack failed and rolled back (ROLLBACK_COMPLETE)
+
+A stack whose creation failed and rolled back is stuck in
+`ROLLBACK_COMPLETE` and **cannot be updated**. The next deploy fails with:
+
+```
+An error occurred (ValidationError) when calling the CreateChangeSet
+operation: Stack:arn:aws:cloudformation:...:stack/polymarket-sports/...
+is in ROLLBACK_COMPLETE state and can not be updated.
+```
+
+The workflow handles this automatically: before deploying it checks the stack
+status, and if it is `ROLLBACK_COMPLETE` it deletes the stack, waits for the
+delete to finish, and then deploys a fresh one. The failed stack's resources
+were already rolled back, so deleting it orphans nothing.
+
+If you need to do it by hand (AWS Console -> **CloudFormation** -> select
+`polymarket-sports` -> **Delete**), or to check what went wrong first:
+
+1. **CloudFormation** -> stack `polymarket-sports` -> **Events** tab -> find
+   the first `CREATE_FAILED` resource. That is the root cause; the rest are
+   "Resource creation cancelled" casualties.
+2. Fix the cause — usually a missing IAM permission on the deploy role
+   (see the permissions table above).
+3. Delete the stack.
+4. Re-run **Deploy NBA Polymarket Bot**.
+
+### If the bootstrap stack failed (ROLLBACK_FAILED)
 
 Clean up in the console **before** re-running deploy:
 
