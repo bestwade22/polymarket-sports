@@ -681,7 +681,14 @@ Resources:
                   - dynamodb:Query
                   - dynamodb:Scan
                   - dynamodb:DescribeTable
-                Resource: !GetAtt StateTable.Arn
+                Resource:
+                  - !GetAtt StateTable.Arn
+                  # A Query against a GSI is authorised on the *index* ARN,
+                  # not the table ARN. Every read of the day's games, trades
+                  # and logs goes through GSI1, so without this the
+                  # dashboard, the scale job and the pre-game snapshot all
+                  # fail with AccessDenied on .../table/SportsBotState/index/GSI1.
+                  - !Sub "${StateTable.Arn}/index/GSI1"
               - Effect: Allow
                 Action:
                   - sqs:SendMessage
@@ -733,7 +740,11 @@ Resources:
                   - dynamodb:UpdateItem
                   - dynamodb:Query
                   - dynamodb:Scan
-                Resource: !GetAtt StateTable.Arn
+                Resource:
+                  - !GetAtt StateTable.Arn
+                  # The listener reads the day's armed games through GSI1.
+                  # A GSI Query is authorised on the index ARN.
+                  - !Sub "${StateTable.Arn}/index/GSI1"
               - Effect: Allow
                 Action:
                   - sqs:SendMessage
