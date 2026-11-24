@@ -559,15 +559,15 @@ Resources:
       FlexibleTimeWindow:
         Mode: "OFF"
       Target:
-        Arn:
-          Fn::Sub:
-            - "arn:${AWS::Partition}:ecs:${AWS::Region}:${AWS::AccountId}:service/${ClusterName}/${ServiceName}"
-            - ClusterName: !Ref Cluster
-              ServiceName: !GetAtt ListenerService.Name
+        # EventBridge Scheduler reaches ECS through a *universal* target: the
+        # target ARN names the API action to call, not the ECS resource.
+        # Passing the ECS service ARN here is rejected with "Provided Arn is
+        # not in correct format".
+        Arn: !Sub "arn:${AWS::Partition}:scheduler:::aws-sdk:ecs:updateService"
         RoleArn: !GetAtt ScaleUpRole.Arn
         Input:
           Fn::Sub:
-            - '{"service":"${ServiceName}","cluster":"${ClusterName}","desiredCount":1}'
+            - '{"Cluster":"${ClusterName}","Service":"${ServiceName}","DesiredCount":1}'
             - ServiceName: !GetAtt ListenerService.Name
               ClusterName: !Ref Cluster
 
@@ -579,15 +579,12 @@ Resources:
       FlexibleTimeWindow:
         Mode: "OFF"
       Target:
-        Arn:
-          Fn::Sub:
-            - "arn:${AWS::Partition}:ecs:${AWS::Region}:${AWS::AccountId}:service/${ClusterName}/${ServiceName}"
-            - ClusterName: !Ref Cluster
-              ServiceName: !GetAtt ListenerService.Name
+        # Universal target - see the note on ScaleUpSchedule.
+        Arn: !Sub "arn:${AWS::Partition}:scheduler:::aws-sdk:ecs:updateService"
         RoleArn: !GetAtt ScaleDownRole.Arn
         Input:
           Fn::Sub:
-            - '{"service":"${ServiceName}","cluster":"${ClusterName}","desiredCount":0}'
+            - '{"Cluster":"${ClusterName}","Service":"${ServiceName}","DesiredCount":0}'
             - ServiceName: !GetAtt ListenerService.Name
               ClusterName: !Ref Cluster
 

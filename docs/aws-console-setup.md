@@ -297,6 +297,38 @@ If you need to do it by hand (AWS Console -> **CloudFormation** -> select
 3. Delete the stack.
 4. Re-run **Deploy NBA Polymarket Bot**.
 
+### If the stack failed with "Provided Arn is not in correct format"
+
+This is the EventBridge Scheduler target ARN, and it fails the whole stack
+because `ScaleUpSchedule` / `ScaleDownSchedule` cannot be created:
+
+```
+CREATE_FAILED AWS::Scheduler::Schedule ScaleUpSchedule
+  "Invalid request provided: Parameter
+   arn:aws:ecs:ap-east-1:830430162436:service/.../... is not valid.
+   Reason: Provided Arn is not in correct format."
+```
+
+EventBridge Scheduler reaches an API through a **universal target**, where
+the target ARN names the *API action to call*, not the resource to call it
+on:
+
+```
+arn:aws:scheduler:::aws-sdk:ecs:updateService
+```
+
+Passing the ECS service's own ARN (`arn:aws:ecs:...:service/<cluster>/<service>`)
+is rejected. Two details matter:
+
+- The action name is camelCase — `updateService`, not `UpdateService`.
+- The `Input` keys are PascalCase, matching the ECS API shape:
+  `{"Cluster":"...","Service":"...","DesiredCount":1}`. Lowercase keys are
+  accepted at creation time but fail on every invocation.
+
+The same rule applies to the one-shot window schedules that the daily fetch
+creates at runtime (`src/trade/scaler.py`), so both paths must use the
+universal-target form.
+
 ### If the bootstrap stack failed (ROLLBACK_FAILED)
 
 Clean up in the console **before** re-running deploy:

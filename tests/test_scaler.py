@@ -1,5 +1,6 @@
 """Tests for the listener scaler."""
 
+import json
 from typing import Any, Optional
 
 import pytest
@@ -173,9 +174,34 @@ class TestScheduleWindowSchedules:
         end = by_name[f"{_schedule_prefix()}-end"]
 
         assert start["ScheduleExpression"].startswith("at(")
-        assert '"desiredCount":1' in start["Target"]["Input"]
-        assert '"desiredCount":0' in end["Target"]["Input"]
+        assert '"DesiredCount":1' in start["Target"]["Input"]
+        assert '"DesiredCount":0' in end["Target"]["Input"]
         assert start["Target"]["RoleArn"] == "arn:aws:iam::123:role/r"
+
+    def test_uses_the_universal_target_arn(self) -> None:
+        # EventBridge Scheduler only accepts a universal target ARN for the
+        # ECS UpdateService action - the ECS service ARN itself is rejected
+        # with "Provided Arn is not in correct format".
+        scheduler = FakeScheduler()
+        schedule_window_schedules(
+            _window(), role_arn="arn:aws:iam::123:role/r", client=scheduler
+        )
+        for created in scheduler.created:
+            assert (
+                created["Target"]["Arn"]
+                == "arn:aws:scheduler:::aws-sdk:ecs:updateService"
+            )
+
+    def test_input_uses_the_ecs_parameter_names(self) -> None:
+        scheduler = FakeScheduler()
+        schedule_window_schedules(
+            _window(), role_arn="arn:aws:iam::123:role/r", client=scheduler
+        )
+        for created in scheduler.created:
+            payload = json.loads(created["Target"]["Input"])
+            assert payload["Cluster"]
+            assert payload["Service"]
+            assert isinstance(payload["DesiredCount"], int)
 
     def test_replaces_the_previous_schedules(self) -> None:
         scheduler = FakeScheduler()

@@ -18,6 +18,7 @@ The scale job is safe to run on a frequent schedule: the desired count is
 idempotent, so a repeat invocation inside the window is a no-op.
 """
 
+import json
 import logging
 from datetime import date, datetime, timezone
 from typing import Any, Optional
@@ -39,8 +40,17 @@ def _schedule_prefix() -> str:
     return f"{settings.stack_name}-listener"
 
 
-def _service_arn(account_id: str, region: str, cluster: str, service: str) -> str:
-    return f"arn:aws:ecs:{region}:{account_id}:service/{cluster}/{service}"
+def _update_service_target_arn() -> str:
+    """The EventBridge Scheduler universal-target ARN for ECS UpdateService.
+
+    EventBridge Scheduler reaches a service API through a *universal* target:
+    the target ARN names the API action to call, not the resource to call it
+    on. Targeting an ECS service by its own ARN is rejected by the Scheduler
+    with "Provided Arn is not in correct format".
+
+    The action name is camelCase - ``updateService``, not ``UpdateService``.
+    """
+    return "arn:aws:scheduler:::aws-sdk:ecs:updateService"
 
 
 def get_service_name() -> str:
@@ -255,13 +265,15 @@ def schedule_window_schedules(
                 ScheduleExpression=f"at({expression})",
                 FlexibleTimeWindow={"Mode": "OFF"},
                 Target={
-                    "Arn": _service_arn(
-                        settings.aws_account_id, settings.aws_region, cluster, service
-                    ),
+                    "Arn": _update_service_target_arn(),
                     "RoleArn": role_arn,
-                    "Input": (
-                        '{"service":"' + service + '","cluster":"' + cluster
-                        + '","desiredCount":' + str(desired) + "}"
+                    "Input": json.dumps(
+                        {
+                            "Cluster": cluster,
+                            "Service": service,
+                            "DesiredCount": desired,
+                        },
+                        separators=(",", ":"),
                     ),
                 },
             )
