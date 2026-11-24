@@ -218,9 +218,16 @@ jobs:
           add_if_set "BotSecretArn"          "${BOT_SECRET_ARN}"
           add_if_set "PrivateKey"           "${CLOB_PRIVATE_KEY}"
           add_if_set "DepositWalletAddress" "${DEPOSIT_WALLET_ADDRESS}"
-          add_if_set "ApiNinjasKey"         "${API_NINJAS_KEY}"
           add_if_set "TelegramBotToken"     "${TELEGRAM_BOT_TOKEN}"
           add_if_set "TelegramChatId"       "${TELEGRAM_CHAT_ID}"
+
+          # The API Ninjas key is only passed when the stack creates its
+          # own secret. With BOT_SECRET_ARN set, the shared secret already
+          # holds API_NINJAS_KEY, and duplicating it here would leave a
+          # copy of the key in the stack's parameter history.
+          if [ -z "${BOT_SECRET_ARN}" ]; then
+            add_if_set "ApiNinjasKey" "${API_NINJAS_KEY}"
+          fi
 
           if [ -z "${BOT_SECRET_ARN}" ] && [ -z "${CLOB_PRIVATE_KEY}" ]; then
             echo "Neither BOT_SECRET_ARN nor CLOB_PRIVATE_KEY is set, so the"
@@ -233,6 +240,7 @@ jobs:
             --no-confirm-changeset \
             --no-fail-on-empty-changeset \
             --capabilities CAPABILITY_IAM CAPABILITY_NAMED_IAM \
+            --resolve-image-repos \
             --parameter-overrides "${PARAMS[@]}"
 
       # SAM image deploys leave old digests in ECR; the lifecycle policy
