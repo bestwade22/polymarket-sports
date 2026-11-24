@@ -88,17 +88,20 @@ Parameters:
       the halftime cutoff and any in-flight buy's recovery sell.
   ScaleUpCron:
     Type: String
-    Default: "cron(0 15 * * ? *)"
+    Default: "cron(0 23 * * ? *)"
     Description: >-
       Backstop scale-up time. The listener normally scales up from the window
       derived from the day's tip-off times; this cron is the fallback if that
-      path fails. Must be before the earliest tip-off.
+      path fails. Must be before the earliest tip-off. 23:00 UTC is 18:00 ET,
+      an hour before the earliest NBA tip-off.
   ScaleDownCron:
     Type: String
-    Default: "cron(0 20 * * ? *)"
+    Default: "cron(0 12 * * ? *)"
     Description: >-
       Backstop scale-down time. The listener normally scales down when its
-      window closes; this cron is the fallback if that path fails.
+      window closes; this cron is the fallback if that path fails. 12:00 UTC
+      is 07:00 ET, after the last game of the previous ET day has finished
+      and its recovery sell has been placed.
 
 Conditions:
   # When BotSecretArn is set, the stack reads the credentials from that
@@ -221,8 +224,13 @@ Resources:
         Schedule:
           Type: Schedule
           Properties:
-            Schedule: cron(30 0 * * ? *)
-            Description: Daily NBA schedule fetch at 00:30 Hong Kong time.
+            # 16:00 UTC = 11:00 ET. AWS cron expressions are always UTC, and
+            # every date in this bot is an ET date, so a fetch that ran
+            # before 05:00 UTC would resolve to the *previous* ET day and
+            # fetch the wrong slate. 11:00 ET is after ET midnight and
+            # eight hours before the earliest tip-off (19:00 ET).
+            Schedule: cron(0 16 * * ? *)
+            Description: Daily NBA schedule fetch at 16:00 UTC (11:00 ET).
             Enabled: true
 
   SnapshotPriceFunction:

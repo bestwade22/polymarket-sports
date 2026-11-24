@@ -36,8 +36,18 @@ from src.trade.window import (
 logger = logging.getLogger(__name__)
 
 # The prefix for the one-shot EventBridge schedules this module creates.
-def _schedule_prefix() -> str:
-    return f"{settings.stack_name}-listener"
+def _schedule_prefix(day: Optional[str] = None) -> str:
+    """The name prefix for the one-shot schedules.
+
+    The day is part of the name because the daily fetch now covers several
+    days at once (today and the days ahead). With a single fixed name, each
+    day's fetch would delete the previous day's schedules and only the last
+    day would end up with a scale-up schedule of its own.
+    """
+    base = f"{settings.stack_name}-listener"
+    if not day:
+        return base
+    return f"{base}-{day}"
 
 
 def _update_service_target_arn() -> str:
@@ -215,12 +225,16 @@ def run_scale_job(
     }
 
 
-def delete_window_schedules(*, client=None) -> int:
-    """Delete the one-shot schedules this module created. Returns the count."""
+def delete_window_schedules(day: Optional[str] = None, *, client=None) -> int:
+    """Delete the one-shot schedules this module created. Returns the count.
+
+    With no ``day`` the legacy (day-less) schedule pair is deleted; with a
+    day, only that day's two schedules are removed.
+    """
     scheduler = client or _scheduler_client()
     deleted = 0
     for suffix in ("start", "end"):
-        name = f"{_schedule_prefix()}-{suffix}"
+        name = f"{_schedule_prefix(day)}-{suffix}"
         try:
             scheduler.delete_schedule(Name=name)
             deleted += 1
@@ -233,6 +247,7 @@ def schedule_window_schedules(
     window: Optional[dict[str, Any]],
     *,
     role_arn: str,
+    day: Optional[str] = None,
     client=None,
 ) -> list[str]:
     """Create one-shot schedules for the window's start and end.
@@ -241,6 +256,9 @@ def schedule_window_schedules(
     exactly when the window opens even if the scale job has not run for
     hours. Both schedules are replaced (``UpdateSchedule`` semantics via
     delete-then-create) so a rescheduled game moves them.
+
+    The ``day`` scopes the schedule names, so the days the daily fetch covers
+    at once (today and the days ahead) each keep their own pair.
     """
     if not window:
         return []
@@ -249,7 +267,7 @@ def schedule_window_schedules(
     cluster = get_cluster_name()
     service = get_service_name()
 
-    delete_window_schedules(client=scheduler)
+    delete_window_schedules(day, client=scheduler)
 
     created: list[str] = []
     for suffix, expression, desired in (
@@ -258,7 +276,7 @@ def schedule_window_schedules(
     ):
         if not expression:
             continue
-        name = f"{_schedule_prefix()}-{suffix}"
+        name = f"{_schedule_prefix(day)}-{suffix}"
         try:
             scheduler.create_schedule(
                 Name=name,
@@ -296,12 +314,13 @@ def run_schedule_creation(
     """Compute the window and (re)create the one-shot schedules for it."""
     dynamo = store or DynamoStore()
     window = resolve_window(target_date=target_date, store=dynamo)
+    day = target_date.isoformat() if target_date is not None else today_et().isoformat()
     if not window:
-        delete_window_schedules(client=client)
+        delete_window_schedules(day, client=client)
         return {"status": "no_window", "schedules": []}
 
     created = (
-        schedule_window_schedules(window, role_arn=role_arn, client=client)
+        schedule_window_schedules(window, role_arn=role_arn, day=day, client=client)
         if role_arn
         else []
     )

@@ -9,8 +9,8 @@ original pre-game level, a resting sell order takes the profit.
 ## How it works
 
 ```
-00:30 HKT   fetch-daily      API Ninjas schedule + standings
-                            → Gamma NBA events (series 10345)
+16:00 UTC   fetch-daily      API Ninjas schedule + standings (by ET date)
+  11:00 ET                    → Gamma NBA events (series 10345)
                             → match on (away, home, ET date)
                             → DynamoDB GAME#<slug>/META (status=scheduled)
                             → derive the listener window from the tip-offs
@@ -63,6 +63,32 @@ closes, so a failed scale-down cannot leave a task running all night.
 A fixed cron cannot express this: an early tip-off, a double header, a
 make-up game or a rescheduled tip-off all move the window. The cron
 schedules that remain in the template are only a backstop.
+
+### Why the fetch runs at 16:00 UTC
+
+Every date in this bot is an **ET** date, and AWS cron expressions are
+always **UTC**. That combination is what makes the fetch time matter:
+
+| UTC | ET | what it fetches |
+|---|---|---|
+| 00:30 | 19:30 the *previous* day | yesterday's slate — **wrong** |
+| 16:00 | 11:00 today | today's slate — correct |
+
+A fetch before 05:00 UTC (00:00 ET) lands on the previous ET day, so the
+bot would stage yesterday's games while the day's own slate was never
+fetched. The fetch therefore runs at **16:00 UTC = 11:00 ET**: after ET
+midnight, and eight hours before the earliest tip-off (19:00 ET).
+
+The fetch also covers the **day ahead** (`DAILY_FETCH_DAYS_AHEAD`, default
+1). The schedule and the Polymarket moneyline markets for the next evening
+are published well in advance, so fetching ahead stages the next slate —
+games *and* its listener window — before it is needed. Each day keeps its
+own pair of one-shot window schedules, so the days do not overwrite one
+another.
+
+The schedule source is queried **by date**. The API Ninjas schedule
+endpoint returns only the current slate when called without a date filter,
+so an unfiltered fetch for any other day comes back empty.
 
 ### The trigger rule
 

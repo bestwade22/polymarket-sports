@@ -65,12 +65,29 @@ class NbaClient:
 
     # --- schedule ----------------------------------------------------------
 
-    def fetch_games(self, league: str = "nba") -> list[dict[str, Any]]:
-        """All games for a league, normalised."""
+    def fetch_games(
+        self,
+        league: str = "nba",
+        target_date: Optional[date] = None,
+    ) -> list[dict[str, Any]]:
+        """Games for a league, normalised.
+
+        When ``target_date`` is given the request is filtered to that ET
+        schedule date. This matters: the *unfiltered* endpoint returns only a
+        narrow default window (the current slate), so a fetch for a future
+        day silently comes back empty. Filtering by date is the only way to
+        pull a specific day's games.
+
+        With no ``target_date`` the unfiltered call is made, which is what
+        the live-score lookups want (they need whatever is in progress now).
+        """
+        params: dict[str, Any] = {"league": league}
+        if target_date is not None:
+            params["date"] = target_date.isoformat()
         try:
             resp = self.session.get(
                 f"{self.base_url}/basketballgames",
-                params={"league": league},
+                params=params,
                 headers=self._headers(),
                 timeout=self.timeout,
             )
@@ -86,7 +103,11 @@ class NbaClient:
 
         games = [self._normalise_game(g) for g in payload if isinstance(g, dict)]
         games.sort(key=lambda g: g.get("start_time") or "")
-        logger.info("API Ninjas returned %d NBA games", len(games))
+        logger.info(
+            "API Ninjas returned %d NBA games%s",
+            len(games),
+            f" for {target_date.isoformat()}" if target_date is not None else "",
+        )
         return games
 
     def fetch_todays_games(self, league: str = "nba") -> list[dict[str, Any]]:

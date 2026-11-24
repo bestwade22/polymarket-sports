@@ -10,7 +10,7 @@ fully described by environment variables + Secrets Manager.
 
 import logging
 import os
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Optional
 
@@ -160,6 +160,31 @@ def parse_event_date(value: Optional[str] = None) -> date:
     return today_et()
 
 
+def fetch_target_date() -> date:
+    """The primary ET day the scheduled daily fetch should fetch.
+
+    This is today's ET date. The scheduled fetch also covers the days
+    *ahead* of it (see ``DAILY_FETCH_DAYS_AHEAD``), so that the next
+    evening's slate is staged before it is needed.
+
+    The date is resolved in **ET**, not in UTC, so the behaviour does not
+    change with the season's daylight-saving switch.
+    """
+    return today_et()
+
+
+def fetch_target_dates() -> list[date]:
+    """Every ET day the scheduled daily fetch should fetch.
+
+    Today's ET date first, then the days ahead of it. The list is ordered
+    oldest-first so that the day's own listener window is written before
+    tomorrow's.
+    """
+    base = fetch_target_date()
+    ahead = max(0, int(settings.daily_fetch_days_ahead))
+    return [base + timedelta(days=offset) for offset in range(ahead + 1)]
+
+
 class Settings:
     # --- Credentials --------------------------------------------------------
     private_key: str = os.getenv("PRIVATE_KEY", "")
@@ -228,8 +253,25 @@ class Settings:
     telegram_notify_enabled: bool = _env_bool("TELEGRAM_NOTIFY_ENABLED", True)
 
     # --- Scheduling --------------------------------------------------------
-    daily_fetch_hour_utc: int = _env_int("DAILY_FETCH_HOUR_UTC", 0)
-    daily_fetch_minute_utc: int = _env_int("DAILY_FETCH_MINUTE_UTC", 30)
+    # The daily fetch runs at DAILY_FETCH_HOUR_UTC:DAILY_FETCH_MINUTE_UTC in
+    # **UTC** (AWS cron expressions are always UTC).
+    #
+    # The hour matters because every date in this bot is an *ET* date. A fetch
+    # that runs before 05:00 UTC falls on the *previous* ET day, so the
+    # schedule would pick up yesterday's slate instead of today's. The
+    # default of 16:00 UTC is 11:00 ET - comfortably after ET midnight and
+    # eight hours before the earliest tip-off (19:00 ET / 00:00 UTC).
+    daily_fetch_hour_utc: int = _env_int("DAILY_FETCH_HOUR_UTC", 16)
+    daily_fetch_minute_utc: int = _env_int("DAILY_FETCH_MINUTE_UTC", 0)
+    # How many ET days ahead of today the scheduled fetch also covers.
+    # 1 = fetch today and tomorrow.
+    #
+    # The bot trades the *upcoming* slate, and the schedule and the
+    # Polymarket markets for the next evening are published well in advance.
+    # Fetching a day ahead means the next slate is already staged (with its
+    # listener window) before it is needed, so a late addition or a
+    # reschedule is picked up with time to spare.
+    daily_fetch_days_ahead: int = _env_int("DAILY_FETCH_DAYS_AHEAD", 1)
     snapshot_interval_minutes: int = _env_int("SNAPSHOT_INTERVAL_MINUTES", 5)
     # How long before the first tip-off the Fargate listener must be up. The
     # snapshot arms a game at T-PRE_GAME_SNAPSHOT_MINUTES and the listener's

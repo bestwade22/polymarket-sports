@@ -47,7 +47,7 @@ class FakeNbaClient:
         self._games = games
         self._standings = standings
 
-    def fetch_games(self, league: str = "nba") -> list[dict[str, Any]]:
+    def fetch_games(self, league: str = "nba", target_date=None) -> list[dict[str, Any]]:
         return self._games
 
     def fetch_standings(self, league: str = "nba") -> dict[str, Any]:

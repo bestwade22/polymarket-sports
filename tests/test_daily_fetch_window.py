@@ -28,7 +28,7 @@ class FakeStore:
 
 
 class FakeNba:
-    def fetch_games(self, league: str = "nba"):
+    def fetch_games(self, league: str = "nba", target_date=None):
         return [
             {
                 "game_id": "g1",
@@ -55,7 +55,7 @@ class FakeNba:
 
 
 class FakeGamma:
-    def list_nba_events(self):
+    def list_nba_events(self, target_date=None):
         return [
             {
                 "id": "1",

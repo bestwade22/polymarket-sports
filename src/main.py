@@ -23,7 +23,13 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from config.settings import ensure_dirs, parse_event_date, settings, today_et
+from config.settings import (
+    ensure_dirs,
+    fetch_target_dates,
+    parse_event_date,
+    settings,
+    today_et,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -62,14 +68,25 @@ def cmd_bootstrap_local(_args: argparse.Namespace) -> None:
 def cmd_fetch_daily(args: argparse.Namespace) -> None:
     from src.fetch.daily_fetch import run_daily_fetch
 
-    target = parse_event_date(args.date)
-    result = run_daily_fetch(target_date=target)
-    logger.info(
-        "Daily fetch complete for %s: %d matched, %d unmatched",
-        target.isoformat(),
-        len(result.get("matched") or []),
-        len(result.get("unmatched") or []),
-    )
+    if args.date:
+        # An explicit date fetches just that day.
+        days = [parse_event_date(args.date)]
+    else:
+        # No date: fetch the whole scheduled range (today and the days ahead).
+        days = fetch_target_dates()
+
+    for target in days:
+        try:
+            result = run_daily_fetch(target_date=target)
+        except Exception:  # noqa: BLE001
+            logger.exception("Daily fetch failed for %s", target.isoformat())
+            continue
+        logger.info(
+            "Daily fetch complete for %s: %d matched, %d unmatched",
+            target.isoformat(),
+            len(result.get("matched") or []),
+            len(result.get("unmatched") or []),
+        )
 
 
 def cmd_snapshot_price(args: argparse.Namespace) -> None:
@@ -118,17 +135,31 @@ def cmd_scale_listener(args: argparse.Namespace) -> None:
     )
 
 
+def _fetch_all_days() -> None:
+    """Fetch every ET day the schedule covers: today and the days ahead.
+
+    A failure on one day must not stop the others, so each day is fetched
+    inside its own try.
+    """
+    from src.fetch.daily_fetch import run_daily_fetch
+
+    for day in fetch_target_dates():
+        try:
+            run_daily_fetch(target_date=day)
+        except Exception:  # noqa: BLE001
+            logger.exception("Daily fetch failed for %s", day.isoformat())
+
+
 def cmd_run_scheduler(args: argparse.Namespace) -> None:
     from apscheduler.schedulers.blocking import BlockingScheduler
     from apscheduler.triggers.cron import CronTrigger
 
-    from src.fetch.daily_fetch import run_daily_fetch
     from src.fetch.pregame_snapshot import run_pregame_snapshot
     from src.trade.scaler import run_scale_job
 
     scheduler = BlockingScheduler()
     scheduler.add_job(
-        lambda: run_daily_fetch(target_date=today_et()),
+        _fetch_all_days,
         CronTrigger(
             hour=settings.daily_fetch_hour_utc,
             minute=settings.daily_fetch_minute_utc,
@@ -172,7 +203,10 @@ def build_parser() -> argparse.ArgumentParser:
 
     sub.add_parser("bootstrap-local", help="Create the local DynamoDB table and SQS queue")
 
-    fetch_parser = sub.add_parser("fetch-daily", help="Fetch today's NBA schedule and match Polymarket")
+    fetch_parser = sub.add_parser(
+        "fetch-daily",
+        help="Fetch the NBA schedule and match Polymarket (today and the days ahead by default)",
+    )
     fetch_parser.add_argument("--date", metavar="YYYY-MM-DD", default=None)
 
     snap_parser = sub.add_parser("snapshot-price", help="Take pre-game prices for imminent games")

@@ -52,6 +52,7 @@ class GammaSportsClient:
         limit: int = 100,
         max_pages: int = 20,
         closed: str = "false",
+        target_date: Optional[date] = None,
     ) -> list[dict[str, Any]]:
         """Page through the NBA event list, keeping only moneyline events.
 
@@ -59,6 +60,12 @@ class GammaSportsClient:
         same page no matter which cursor is sent - so offset pagination via
         ``GET /events`` is used instead. The server caps a page at 100
         events, so the limit is clamped.
+
+        When ``target_date`` is given the pages are requested in
+        ``startTime`` order so that the day's events are reached early. The
+        default (unsorted) order is not stable across requests, so a
+        target-date fetch must not rely on the target happening to fall
+        inside the first page.
         """
         series = series_id or settings.polymarket_series_id
         page_size = min(int(limit), 100)
@@ -72,6 +79,11 @@ class GammaSportsClient:
                 "offset": page * page_size,
                 "closed": closed,
             }
+            if target_date is not None:
+                # Sort by start time so the target day's events come first.
+                # The offset then walks forward from the earliest game.
+                params["order"] = "startTime"
+                params["ascending"] = "true"
             try:
                 resp = self.session.get(
                     f"{self.base_url}/events", params=params, timeout=self.timeout

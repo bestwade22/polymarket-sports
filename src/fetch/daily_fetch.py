@@ -118,11 +118,14 @@ def pick_favourite(meta: dict[str, Any]) -> Optional[dict[str, Any]]:
     return {"role": "home", "name": meta.get("home_team"), "price": home}
 
 
-def _schedule_window(window: dict[str, Any]) -> None:
+def _schedule_window(window: dict[str, Any], day: str) -> None:
     """Create the one-shot schedules that scale the listener for this window.
 
     Best effort: a failure here must not fail the daily fetch, because the
     periodic scale job is the fallback that will still bring the listener up.
+
+    The schedules are named per day, so the days the fetch covers at once
+    (today and the days ahead) each keep their own pair.
     """
     role_arn = settings.scheduler_role_arn
     if not role_arn:
@@ -133,7 +136,7 @@ def _schedule_window(window: dict[str, Any]) -> None:
     try:
         from src.trade.scaler import schedule_window_schedules
 
-        created = schedule_window_schedules(window, role_arn=role_arn)
+        created = schedule_window_schedules(window, role_arn=role_arn, day=day)
         logger.info("Listener window schedules: %s", ", ".join(created) or "(none)")
     except Exception:
         logger.exception("Could not create the listener window schedules")
@@ -159,11 +162,13 @@ def run_daily_fetch(
     dynamo = store or DynamoStore()
 
     logger.info("Fetching NBA schedule for %s", target.isoformat())
-    games = nba.fetch_games(settings.sports_league)
+    # The date filter is essential: the unfiltered endpoint only returns the
+    # current slate, so a fetch for a future day would come back empty.
+    games = nba.fetch_games(settings.sports_league, target_date=target)
     standings = nba.fetch_standings(settings.sports_league)
 
     logger.info("Fetching Polymarket NBA events (series %s)", settings.polymarket_series_id)
-    events = gamma.list_nba_events()
+    events = gamma.list_nba_events(target_date=target)
 
     matched_pairs, unmatched = match_schedule(games, events)
 
@@ -214,7 +219,7 @@ def run_daily_fetch(
         logger.info(
             "Listener window for %s: %s", target.isoformat(), describe_window(window)
         )
-        _schedule_window(window)
+        _schedule_window(window, target.isoformat())
     else:
         logger.warning(
             "No listener window for %s - the Fargate listener will not scale up",
