@@ -164,6 +164,14 @@ Actions often missing on a minimal policy:
 - `sqs:CreateQueue` — the trade queue and DLQ
 - `dynamodb:CreateTable` — the state table
 - `events:PutRule` / `events:PutTargets` — the Lambda schedule rules
+- `ec2:DescribeAvailabilityZones` — the template resolves the subnet AZs with
+  `!GetAZs ""`, which is an API call. Without it the subnet creation is
+  denied and the whole stack rolls back with
+  *"AccessDenied. User doesn't have permission to call
+  ec2:DescribeAvailabilityZones"*. The ECS service then needs
+  `ec2:DescribeNetworkInterfaces` and `ecs:DescribeCapacityProviders` for
+  its `awsvpc` network attachments and its Fargate capacity provider
+  strategy.
 
 ### Service prefixes that are easy to get wrong
 
