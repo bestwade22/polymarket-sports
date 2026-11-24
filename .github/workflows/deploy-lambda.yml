@@ -190,6 +190,9 @@ jobs:
           # secret instead of creating one - so the wallet key never has to
           # be pasted into GitHub.
           BOT_SECRET_ARN: ${{ vars.BOT_SECRET_ARN }}
+          # Optional: reserved concurrency for the trade worker. Unset
+          # means no reservation (the stack default of 0).
+          TRADE_WORKER_CONCURRENCY: ${{ vars.TRADE_WORKER_CONCURRENCY }}
         run: |
           set -euo pipefail
 
@@ -222,6 +225,13 @@ jobs:
           add_if_set "DepositWalletAddress" "${DEPOSIT_WALLET_ADDRESS}"
           add_if_set "TelegramBotToken"     "${TELEGRAM_BOT_TOKEN}"
           add_if_set "TelegramChatId"       "${TELEGRAM_CHAT_ID}"
+
+          # Reserved concurrency for the trade worker. Left unset by
+          # default: AWS rejects a reservation that would drop the
+          # account's UnreservedConcurrentExecutions below its minimum
+          # (10 on a new account), so the stack default of 0 (no
+          # reservation) is used unless this is explicitly set.
+          add_if_set "TradeWorkerConcurrency" "${TRADE_WORKER_CONCURRENCY}"
 
           # The API Ninjas key is only passed when the stack creates its
           # own secret. With BOT_SECRET_ARN set, the shared secret already

@@ -58,6 +58,15 @@ Parameters:
   ShareCount:
     Type: Number
     Default: 5
+  TradeWorkerConcurrency:
+    Type: String
+    Default: "0"
+    Description: >-
+      Reserved concurrency for the trade worker. 0 means no reservation.
+      A reservation caps the worker so it can never overshoot, but AWS
+      rejects any reservation that would drop the account's
+      UnreservedConcurrentExecutions below its minimum (10 on a new
+      account), so this stays off unless the account has the quota for it.
   PriceDropRatio:
     Type: Number
     Default: 0.5
@@ -96,6 +105,8 @@ Conditions:
   # existing secret and does not create one of its own.
   UseExistingSecret: !Not [!Equals [!Ref BotSecretArn, ""]]
   CreateOwnSecret: !Equals [!Ref BotSecretArn, ""]
+  # Only apply a reserved-concurrency setting when one was asked for.
+  HasTradeWorkerConcurrency: !Not [!Equals [!Ref TradeWorkerConcurrency, "0"]]
 
 Globals:
   Function:
@@ -251,7 +262,10 @@ Resources:
       Role: !GetAtt LambdaRole.Arn
       Timeout: 60
       MemorySize: 512
-      ReservedConcurrentExecutions: 5
+      ReservedConcurrentExecutions: !If
+        - HasTradeWorkerConcurrency
+        - !Ref TradeWorkerConcurrency
+        - !Ref AWS::NoValue
       Environment:
         Variables:
           DYNAMODB_TABLE: !Ref StateTable
