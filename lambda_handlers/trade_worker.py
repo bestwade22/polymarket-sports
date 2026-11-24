@@ -19,35 +19,57 @@ logger = logging.getLogger(__name__)
 
 def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
     configure_logging()
-    apply_secrets()
+    logger.info("=" * 60)
+    logger.info("JOB START: trade-worker (SQS consumer)")
+    logger.info("=" * 60)
+    
+    try:
+        apply_secrets()
+        logger.info("Step 1/3: Secrets loaded")
+    except Exception as e:
+        logger.error("Step 1/3 FAILED: %s", e, exc_info=True)
+        raise
 
     from src.trade.buy_sell import TradeWorker
 
     records = (event or {}).get("Records") or []
+    logger.info("Step 2/3: Processing %d SQS messages", len(records))
+    
     worker = TradeWorker()
 
     batch_item_failures: List[Dict[str, Any]] = []
     processed = 0
+    failed = 0
     results: List[Dict[str, Any]] = []
 
-    for record in records:
+    for idx, record in enumerate(records, 1):
         message_id = str(record.get("messageId") or "")
+        logger.info("  Message %d/%d (ID: %s)...", idx, len(records), message_id)
         try:
             import json
 
             body = json.loads(record.get("body") or "{}")
+            msg_type = body.get("type", "unknown")
             result = worker.handle_message(body)
             processed += 1
             results.append(result)
-            logger.info("Processed message %s: %s", message_id, result.get("status"))
+            logger.info("  ✓ Message %s (%s): %s", message_id, msg_type, result.get("status"))
         except Exception as exc:  # noqa: BLE001
-            logger.exception("Failed to process message %s", message_id)
+            failed += 1
+            logger.exception("  ✗ Message %s FAILED: %s", message_id, exc)
             batch_item_failures.append({"itemIdentifier": message_id})
 
+    logger.info("Step 3/3: Batch complete - processed=%d failed=%d", processed, failed)
+    logger.info("=" * 60)
+    logger.info("JOB SUCCESS: trade-worker completed batch")
+    logger.info("=" * 60)
+    
     return {
         "status": "ok",
         "processed": processed,
-        "failed": len(batch_item_failures),
+        "failed": failed,
+        "batchItemFailures": batch_item_failures,
+    }
         "batchItemFailures": batch_item_failures,
         "results": results,
     }

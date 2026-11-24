@@ -157,74 +157,151 @@ def run_daily_fetch(
     ``standings``.
     """
     target = target_date or today_et()
+    logger.info("[daily_fetch] Starting for ET date: %s", target.isoformat())
+    
     nba = nba_client or NbaClient()
     gamma = gamma_client or GammaSportsClient()
     dynamo = store or DynamoStore()
 
-    logger.info("Fetching NBA schedule for %s", target.isoformat())
-    # The date filter is essential: the unfiltered endpoint only returns the
-    # current slate, so a fetch for a future day would come back empty.
-    games = nba.fetch_games(settings.sports_league, target_date=target)
-    standings = nba.fetch_standings(settings.sports_league)
+    # Step A: Fetch NBA schedule
+    try:
+        logger.info("[daily_fetch] Step A: Fetching NBA schedule from API Ninjas...")
+        games = nba.fetch_games(settings.sports_league, target_date=target)
+        logger.info("[daily_fetch] Step A: ✓ Got %d games from NBA schedule", len(games))
+    except Exception as e:
+        logger.error("[daily_fetch] Step A FAILED: NBA schedule fetch: %s", e, exc_info=True)
+        raise
 
-    logger.info("Fetching Polymarket NBA events (series %s)", settings.polymarket_series_id)
-    events = gamma.list_nba_events(target_date=target)
+    # Step B: Fetch standings
+    try:
+        logger.info("[daily_fetch] Step B: Fetching standings...")
+        standings = nba.fetch_standings(settings.sports_league)
+        logger.info("[daily_fetch] Step B: ✓ Got standings for %d teams", len(standings))
+    except Exception as e:
+        logger.error("[daily_fetch] Step B FAILED: Standings fetch: %s", e, exc_info=True)
+        raise
 
-    matched_pairs, unmatched = match_schedule(games, events)
+    # Step C: Fetch Polymarket events
+    try:
+        logger.info("[daily_fetch] Step C: Fetching Polymarket NBA events (series %s)...", 
+                   settings.polymarket_series_id)
+        events = gamma.list_nba_events(target_date=target)
+        logger.info("[daily_fetch] Step C: ✓ Got %d Polymarket events", len(events))
+    except Exception as e:
+        logger.error("[daily_fetch] Step C FAILED: Polymarket events fetch: %s", e, exc_info=True)
+        raise
 
+    # Step D: Match schedule with events
+    try:
+        logger.info("[daily_fetch] Step D: Matching NBA schedule with Polymarket events...")
+        matched_pairs, unmatched = match_schedule(games, events)
+        logger.info("[daily_fetch] Step D: ✓ Matched %d pairs, %d unmatched games", 
+                   len(matched_pairs), len(unmatched))
+    except Exception as e:
+        logger.error("[daily_fetch] Step D FAILED: Schedule matching: %s", e, exc_info=True)
+        raise
+
+    # Step E: Build and persist game metadata
     matched: list[dict[str, Any]] = []
     game_metas: list[dict[str, Any]] = []
-    for pair in matched_pairs:
-        game = pair["game"]
-        event = pair["event"]
-        meta = build_game_meta(game, event, standings, target_date=target)
-        if not meta.get("slug"):
-            logger.warning("Matched game without a slug; skipping")
-            continue
-        favourite = pick_favourite(meta)
-        if favourite:
-            meta["favourite_team"] = favourite.get("name")
-            meta["favourite_price"] = favourite.get("price")
-        dynamo.put_game(str(meta["slug"]), meta)
-        game_metas.append(meta)
-        matched.append(
-            {
-                "slug": meta.get("slug"),
-                "matchup": f"{meta.get('away_team')} @ {meta.get('home_team')}",
-                "start_time": meta.get("start_time"),
-                "favourite_team": meta.get("favourite_team"),
-                "favourite_price": meta.get("favourite_price"),
-                "away_team": meta.get("away_team"),
-                "home_team": meta.get("home_team"),
+    try:
+        logger.info("[daily_fetch] Step E: Building and persisting game metadata...")
+        for idx, pair in enumerate(matched_pairs, 1):
+            game = pair["game"]
+            event = pair["event"]
+            meta = build_game_meta(game, event, standings, target_date=target)
+            if not meta.get("slug"):
+                logger.warning("[daily_fetch]   Matched pair #%d: no slug generated; skipping", idx)
+                continue
+            
+            favourite = pick_favourite(meta)
+            if favourite:
+                meta["favourite_team"] = favourite.get("name")
+                meta["favourite_price"] = favourite.get("price")
+            
+            dynamo.put_game(str(meta["slug"]), meta)
+            game_metas.append(meta)
+            matched.append(
+                {
+                    "slug": meta.get("slug"),
+                    "matchup": f"{meta.get('away_team')} @ {meta.get('home_team')}",
+                    "start_time": meta.get("start_time"),
+                    "favourite_team": meta.get("favourite_team"),
+                    "favourite_price": meta.get("favourite_price"),
+                    "away_team": meta.get("away_team"),
+                    "home_team": meta.get("home_team"),
+                }
+            )
+            logger.debug("[daily_fetch]   Game #%d: %s (%s)", idx, 
+                        meta.get("slug"), meta.get("start_time"))
+        
+        logger.info("[daily_fetch] Step E: ✓ Persisted %d game metadata items", len(game_metas))
+    except Exception as e:
+        logger.error("[daily_fetch] Step E FAILED: Metadata persistence: %s", e, exc_info=True)
+        raise
+
+    # Step F: Write daily batch summary
+    try:
+        logger.info("[daily_fetch] Step F: Writing daily batch summary to DynamoDB...")
+        batch = {
+            "date": target.isoformat(),
+            "fetched_at": int(datetime.now(timezone.utc).timestamp()),
+            "games": game_metas,
+            "standings": standings,
+            "game_count": len(game_metas),
+        }
+        dynamo.put_daily_batch(target.isoformat(), batch)
+        logger.info("[daily_fetch] Step F: ✓ Daily batch written")
+    except Exception as e:
+        logger.error("[daily_fetch] Step F FAILED: Daily batch write: %s", e, exc_info=True)
+        raise
+
+    # Step G: Compute listener window
+    try:
+        logger.info("[daily_fetch] Step G: Computing listener window...")
+        window = compute_window(
+            game_metas,
+            now_ts=now_ts,
+            lead_minutes=settings.listener_lead_minutes,
+            trail_minutes=settings.listener_trail_minutes,
+        )
+        if window:
+            dynamo.put_schedule_window(target.isoformat(), window)
+            logger.info("[daily_fetch] Step G: ✓ Listener window computed and stored: %s", 
+                       describe_window(window))
+            
+            # Step H: Schedule window one-shots
+            try:
+                logger.info("[daily_fetch] Step H: Scheduling listener window scales...")
+                _schedule_window(window, target.isoformat())
+                logger.info("[daily_fetch] Step H: ✓ Window scales scheduled (or fallback noted)")
+            except Exception as e:
+                logger.error("[daily_fetch] Step H WARNING: Could not schedule window scales: %s", e)
+        else:
+            logger.warning("[daily_fetch] Step G: No listener window (no games?) - Fargate will not auto-scale")
+    except Exception as e:
+        logger.error("[daily_fetch] Step G FAILED: Window computation: %s", e, exc_info=True)
+        raise
+
+    # Step I: Notifications
+    if notify:
+        try:
+            logger.info("[daily_fetch] Step I: Sending Telegram notification...")
+            result = {
+                "date": target.isoformat(),
+                "matched": matched,
+                "unmatched": [unmatched_label(g) for g in unmatched],
+                "games": game_metas,
+                "standings": standings,
+                "event_count": len(events),
+                "schedule_count": len(games),
+                "window": window,
             }
-        )
-
-    batch = {
-        "date": target.isoformat(),
-        "fetched_at": int(datetime.now(timezone.utc).timestamp()),
-        "games": game_metas,
-        "standings": standings,
-        "game_count": len(game_metas),
-    }
-    dynamo.put_daily_batch(target.isoformat(), batch)
-
-    window = compute_window(
-        game_metas,
-        now_ts=now_ts,
-        lead_minutes=settings.listener_lead_minutes,
-        trail_minutes=settings.listener_trail_minutes,
-    )
-    if window:
-        dynamo.put_schedule_window(target.isoformat(), window)
-        logger.info(
-            "Listener window for %s: %s", target.isoformat(), describe_window(window)
-        )
-        _schedule_window(window, target.isoformat())
-    else:
-        logger.warning(
-            "No listener window for %s - the Fargate listener will not scale up",
-            target.isoformat(),
-        )
+            from src.notify.telegram import notify_fetch
+            notify_fetch(result)
+            logger.info("[daily_fetch] Step I: ✓ Telegram notification sent")
+        except Exception:
+            logger.exception("[daily_fetch] Step I WARNING: Telegram notification failed")
 
     result = {
         "date": target.isoformat(),
@@ -237,20 +314,6 @@ def run_daily_fetch(
         "window": window,
     }
 
-    logger.info(
-        "Daily fetch for %s: %d matched, %d unmatched (of %d scheduled games)",
-        target.isoformat(),
-        len(matched),
-        len(unmatched),
-        len(games),
-    )
-
-    if notify:
-        try:
-            from src.notify.telegram import notify_fetch
-
-            notify_fetch(result)
-        except Exception:
-            logger.exception("Telegram fetch notification failed")
-
+    logger.info("[daily_fetch] ✓ COMPLETE: %d matched, %d unmatched (of %d scheduled)", 
+                len(matched), len(unmatched), len(games))
     return result

@@ -185,36 +185,76 @@ def run_scale_job(
 
     Returns a summary dict describing what was done.
     """
+    logger.info("[scale_job] Starting for date: %s", target_date.isoformat() if target_date else "today")
+    
     dynamo = store or DynamoStore()
-    window = resolve_window(target_date=target_date, store=dynamo, now_ts=now_ts)
-
+    
+    # Step 1: Resolve window
+    logger.info("[scale_job] Step 1: Resolving listener window from DynamoDB...")
+    try:
+        window = resolve_window(target_date=target_date, store=dynamo, now_ts=now_ts)
+        if window:
+            logger.info("[scale_job] Step 1: ✓ Window found: %s", describe_window(window))
+        else:
+            logger.info("[scale_job] Step 1: No window (no games or fetch not run yet)")
+    except Exception as e:
+        logger.error("[scale_job] Step 1 FAILED: %s", e, exc_info=True)
+        raise
+    
     if not window:
         # No window means no games to trade - make sure the listener is down
-        # so a stale task does not burn money all night.
-        changed = set_desired_count(0, client=client)
-        logger.info("No listener window; scaled the listener down")
+        logger.info("[scale_job] Step 2: No window found, ensuring listener is down...")
+        try:
+            changed = set_desired_count(0, client=client)
+            logger.info("[scale_job] Step 2: ✓ Listener scaled down (changed=%s)", changed)
+        except Exception as e:
+            logger.error("[scale_job] Step 2 FAILED: %s", e, exc_info=True)
+            raise
+        
         return {
             "status": "no_window",
             "desired_count": 0,
             "changed": changed,
             "window": None,
+            "window_open": False,
         }
 
-    open_now = window_is_open(window, now_ts=now_ts)
-    desired = 1 if open_now else 0
+    # Step 2: Check if window is open
+    logger.info("[scale_job] Step 2: Checking if window is currently open...")
+    try:
+        open_now = window_is_open(window, now_ts=now_ts)
+        desired = 1 if open_now else 0
+        logger.info("[scale_job] Step 2: ✓ Window is %s (desired count: %d)", 
+                   "OPEN" if open_now else "CLOSED", desired)
+    except Exception as e:
+        logger.error("[scale_job] Step 2 FAILED: %s", e, exc_info=True)
+        raise
 
-    existing = current_desired_count(client=client)
+    # Step 3: Get current desired count
+    logger.info("[scale_job] Step 3: Reading current ECS service state...")
+    try:
+        existing = current_desired_count(client=client)
+        logger.info("[scale_job] Step 3: ✓ Current desired count: %s", existing)
+    except Exception as e:
+        logger.error("[scale_job] Step 3 FAILED: %s", e, exc_info=True)
+        raise
+
+    # Step 4: Update if needed
     changed = desired != existing
+    logger.info("[scale_job] Step 4: Comparing desired (%d) vs existing (%s)...", desired, existing)
     if changed:
-        set_desired_count(desired, client=client)
+        logger.info("[scale_job] Step 4: Change needed, updating service...")
+        try:
+            set_desired_count(desired, client=client)
+            logger.info("[scale_job] Step 4: ✓ Service updated to desired count %d", desired)
+        except Exception as e:
+            logger.error("[scale_job] Step 4 FAILED: %s", e, exc_info=True)
+            raise
+    else:
+        logger.info("[scale_job] Step 4: ✓ No change needed (already at desired count)")
 
-    logger.info(
-        "Listener window %s: %s (current=%s desired=%d)",
-        describe_window(window),
-        "open" if open_now else "closed",
-        existing,
-        desired,
-    )
+    logger.info("[scale_job] ✓ COMPLETE: window %s, open=%s, desired=%d, changed=%s",
+               describe_window(window), open_now, desired, changed)
 
     return {
         "status": "ok",
