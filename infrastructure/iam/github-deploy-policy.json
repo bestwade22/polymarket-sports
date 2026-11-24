@@ -132,6 +132,26 @@
       "Resource": "*"
     },
     {
+      "Sid": "CreateECSServiceLinkedRole",
+      "Effect": "Allow",
+      "Action": "iam:CreateServiceLinkedRole",
+      "Resource": "*",
+      "Condition": {
+        "StringEquals": {
+          "iam:AWSServiceName": [
+            "ecs.amazonaws.com",
+            "ecs-tasks.amazonaws.com",
+            "autoscaling.amazonaws.com",
+            "application-autoscaling.amazonaws.com",
+            "events.amazonaws.com",
+            "sqs.amazonaws.com",
+            "sns.amazonaws.com",
+            "lambda.amazonaws.com"
+          ]
+        }
+      }
+    },
+    {
       "Sid": "Scheduler",
       "Effect": "Allow",
       "Action": [

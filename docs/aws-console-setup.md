@@ -137,6 +137,30 @@ Actions often missing on a minimal policy:
   `GetServiceLinkedRoleDeletionStatus` — there is no `ListServiceLinkedRoles`
   (the closest real action is `ListServiceLinkedRoleInstances`), and the
   console rejects the entire policy if any action does not exist.
+
+  The action also needs an `iam:AWSServiceName` condition, otherwise AWS
+  denies the call even though the action is allowed on `Resource: "*"`.
+  That is what the separate `CreateECSServiceLinkedRole` statement in the
+  policy does:
+
+  ```json
+  {
+    "Sid": "CreateECSServiceLinkedRole",
+    "Effect": "Allow",
+    "Action": "iam:CreateServiceLinkedRole",
+    "Resource": "*",
+    "Condition": {
+      "StringEquals": {
+        "iam:AWSServiceName": ["ecs.amazonaws.com", "..."]
+      }
+    }
+  }
+  ```
+
+  If an earlier deploy failed partway through creating the SLR, the role is
+  left in the `FAILED` state and every later `CreateCluster` keeps failing
+  with the same message. The workflow deletes a `FAILED` SLR before it
+  deploys.
 - `sqs:CreateQueue` — the trade queue and DLQ
 - `dynamodb:CreateTable` — the state table
 - `events:PutRule` / `events:PutTargets` — the Lambda schedule rules

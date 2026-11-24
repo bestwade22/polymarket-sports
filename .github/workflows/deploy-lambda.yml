@@ -271,6 +271,40 @@ jobs:
             echo "Stack status is ${STACK_STATUS}; deploying over it."
           fi
 
+          # ECS creates the AWSServiceRoleForECS service-linked role on the
+          # first CreateCluster call. If an earlier attempt failed partway
+          # through that creation, the role is left in the Failed state and
+          # every subsequent CreateCluster fails with:
+          #   "Unable to assume the service linked role. Please verify
+          #    that the ECS service linked role exists."
+          # A Failed SLR blocks creation until it is deleted, so clear it
+          # out here.
+          for slr_name in AWSServiceRoleForECS AWSServiceRoleForApplicationAutoScaling; do
+            slr_path="/aws-service-role/ecs.amazonaws.com/$slr_name"
+            slr_status="$(aws iam get-role \
+              --role-name "$slr_path" \
+              --query 'Role.RoleStatus' \
+              --output text 2>/dev/null || echo "NONE")"
+
+            if [ "$slr_status" = "FAILED" ]; then
+              echo "Service-linked role $slr_name is in FAILED state - deleting it."
+              aws iam delete-service-linked-role \
+                --service-linked-role-name "$slr_path" || true
+              # There is no IAM CLI waiter for service-linked role deletion,
+              # so poll until get-role stops finding the role.
+              for _ in $(seq 1 30); do
+                sleep 2
+                if ! aws iam get-role --role-name "$slr_path" \
+                     >/dev/null 2>&1; then
+                  echo "Deleted."
+                  break
+                fi
+              done
+            else
+              echo "Service-linked role $slr_name: ${slr_status}"
+            fi
+          done
+
           sam deploy \
             --stack-name "$STACK_NAME" \
             --no-confirm-changeset \
