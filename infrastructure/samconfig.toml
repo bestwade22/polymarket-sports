@@ -1,0 +1,37 @@
+version = 0.1
+
+[default.global.parameters]
+stack_name = "polymarket-sports"
+
+[default.build.parameters]
+cached = true
+parallel = true
+
+[default.deploy.parameters]
+capabilities = "CAPABILITY_IAM CAPABILITY_NAMED_IAM"
+confirm_changeset = false
+# SAM needs an S3 bucket to stage the deployment. The default managed
+# bucket already exists in this account (bootstrap stack
+# aws-sam-cli-managed-default), so SAM reuses it instead of creating a
+# second one. Without this, `sam deploy` aborts with "S3 Bucket not
+# specified".
+resolve_s3 = true
+# The functions use PackageType: Image, so SAM needs to know how the
+# images are resolved. The images themselves are built and pushed to ECR
+# by the "Build and push the container images" step (buildx + QEMU for
+# the ARM64 cross-build); the ImageUri/ImageTag parameters below carry
+# the resulting URI to CloudFormation.
+resolve_image_repos = true
+region = "ap-east-1"
+
+[default.package.parameters]
+resolve_s3 = true
+
+[default.sync.parameters]
+watch = true
+
+[default.local_start_api.parameters]
+warm_containers = "EAGER"
+
+[default.local_start_lambda.parameters]
+warm_containers = "EAGER"

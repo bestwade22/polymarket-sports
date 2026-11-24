@@ -194,6 +194,23 @@ SAM will create:
 The deploy is safe to run repeatedly — `sam deploy` with
 `--no-fail-on-empty-changeset` does nothing when nothing changed.
 
+### SAM CLI flags
+
+`sam deploy` is invoked with `--resolve-s3` and `--resolve-image-repos`.
+Both are required by this template and are also recorded in
+`infrastructure/samconfig.toml`:
+
+- `--resolve-s3` — SAM needs an S3 bucket to stage the deployment. Without
+  it, the deploy aborts with *"S3 Bucket not specified, use --s3-bucket to
+  specify a bucket name, or use --resolve-s3 to create a managed default
+  bucket"*. SAM reuses the account's managed bucket
+  (`aws-sam-cli-managed-default-samclisourcebucket-*`), which already exists
+  from the `polymarket-trader` bootstrap stack.
+- `--resolve-image-repos` — every function uses `PackageType: Image`, so SAM
+  must be told how images are resolved. The images themselves are built and
+  pushed to ECR by the workflow's own buildx/QEMU step; the `ImageUri` /
+  `ImageTag` parameters carry the resulting URI to CloudFormation.
+
 ### If deploy failed before (ROLLBACK_FAILED)
 
 Clean up in the console **before** re-running deploy:

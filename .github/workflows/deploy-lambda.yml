@@ -240,6 +240,7 @@ jobs:
             --no-confirm-changeset \
             --no-fail-on-empty-changeset \
             --capabilities CAPABILITY_IAM CAPABILITY_NAMED_IAM \
+            --resolve-s3 \
             --resolve-image-repos \
             --parameter-overrides "${PARAMS[@]}"
 
