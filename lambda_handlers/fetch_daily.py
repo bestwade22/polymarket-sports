@@ -8,6 +8,9 @@ ahead of it (see ``DAILY_FETCH_DAYS_AHEAD``). Fetching ahead means the next
 evening's slate is staged - games written and its listener window derived -
 before it is needed, so a late schedule change or a rescheduled tip-off is
 picked up with time to spare.
+
+Comprehensive logging added for each step (Step A-I) with detailed metrics
+for diagnosis in CloudWatch. See .cursor/rules/logging.mdc for log format.
 """
 
 import logging
