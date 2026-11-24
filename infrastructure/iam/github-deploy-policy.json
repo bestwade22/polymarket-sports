@@ -205,6 +205,7 @@
         "ec2:CreateSubnet",
         "ec2:DeleteSubnet",
         "ec2:DescribeSubnets",
+        "ec2:ModifySubnetAttribute",
         "ec2:DescribeAvailabilityZones",
         "ec2:DescribeInstanceTypes",
         "ec2:DescribeNetworkInterfaces",
