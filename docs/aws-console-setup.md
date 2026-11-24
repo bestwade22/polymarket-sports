@@ -120,6 +120,8 @@ needs and that stack does not:
 | `dynamodb:*` | The `SportsBotState` table |
 | `events:*` | The EventBridge rules that trigger the scheduled Lambdas |
 | `cloudfront:*` | The dashboard distribution, OAC and origin request policy |
+| `apigateway:GET/POST/PUT/PATCH/DELETE` | The dashboard REST API — `execute-api:*` only covers invoking the API, not creating it |
+| `lambda:CreateEventSourceMapping` | The SQS → trade worker event source mapping |
 | `execute-api:*` | The dashboard API |
 | `logs:PutRetentionPolicy` | The listener log group's 30-day retention |
 | `s3:GetBucketWebsite` / `s3:PutBucketWebsite` | The dashboard bucket's static site config |
@@ -161,6 +163,12 @@ Actions often missing on a minimal policy:
   left in the `FAILED` state and every later `CreateCluster` keeps failing
   with the same message. The workflow deletes a `FAILED` SLR before it
   deploys.
+- `lambda:CreateEventSourceMapping` — the trade worker's SQS event source
+  mapping. Without it CloudFormation fails with *"not authorized to perform:
+  lambda:CreateEventSourceMapping on resource: ...event-source-mapping:\*"*.
+- `apigateway:POST` — creating the dashboard REST API. `execute-api:*` only
+  covers *calling* an API, not creating one, so the API Gateway statement
+  needs the `apigateway:` verb prefix as well.
 - `sqs:CreateQueue` — the trade queue and DLQ
 - `dynamodb:CreateTable` — the state table
 - `events:PutRule` / `events:PutTargets` — the Lambda schedule rules
@@ -181,7 +189,7 @@ commonly mis-typed:
 
 | Service | Correct prefix | Common mistake |
 |---------|----------------|----------------|
-| API Gateway | `execute-api:` | `apigateway:` — that is the *API* name, not the IAM prefix. The console also rejects `apigateway:GET`, `apigateway:POST` and friends; those are not IAM actions. |
+| API Gateway | `apigateway:` (GET/POST/PUT/PATCH/DELETE) | `apigateway:OPTIONS` / `apigateway:HEAD` — API Gateway only has the five HTTP verbs. `execute-api:` is a separate service prefix that covers *calling* an API, not creating one. |
 | CloudFront | `cloudfront:` | `cloudfront:DescribeDistribution` — there is no such action. The read side is `GetDistribution` / `GetDistributionConfig`. |
 
 ---

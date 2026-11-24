@@ -98,7 +98,12 @@
         "lambda:RemovePermission",
         "lambda:ListVersionsByFunction",
         "lambda:PutFunctionConcurrency",
-        "lambda:DeleteFunctionConcurrency"
+        "lambda:DeleteFunctionConcurrency",
+        "lambda:CreateEventSourceMapping",
+        "lambda:UpdateEventSourceMapping",
+        "lambda:DeleteEventSourceMapping",
+        "lambda:GetEventSourceMapping",
+        "lambda:ListEventSourceMappings"
       ],
       "Resource": "*"
     },
@@ -109,6 +114,7 @@
         "iam:CreateRole",
         "iam:DeleteRole",
         "iam:GetRole",
+        "iam:ListRoles",
         "iam:PassRole",
         "iam:AttachRolePolicy",
         "iam:DetachRolePolicy",
@@ -314,6 +320,8 @@
         "ecs:ListTasks",
         "ecs:ListTaskDefinitions",
         "ecs:DescribeCapacityProviders",
+        "ecs:ListClusters",
+        "ecs:ListAccountSettings",
         "ecs:TagResource",
         "ecs:UntagResource"
       ],
@@ -355,7 +363,12 @@
       "Effect": "Allow",
       "Action": [
         "execute-api:Invoke",
-        "execute-api:ManageConnections"
+        "execute-api:ManageConnections",
+        "apigateway:GET",
+        "apigateway:POST",
+        "apigateway:PUT",
+        "apigateway:PATCH",
+        "apigateway:DELETE"
       ],
       "Resource": "*"
     }
