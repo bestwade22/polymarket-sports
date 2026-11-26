@@ -220,6 +220,12 @@ Resources:
           DRY_RUN: !Ref DryRun
           SPORTS_LEAGUE: nba
           POLYMARKET_SERIES_ID: "10345"
+          # The daily fetch creates the one-shot schedules that bring the
+          # Fargate listener up exactly when the window opens. Without this
+          # the fetch falls back to the periodic scale job, which only runs
+          # every five minutes.
+          STACK_NAME: !Ref AWS::StackName
+          SCHEDULER_ROLE_ARN: !GetAtt ScaleUpRole.Arn
       Events:
         Schedule:
           Type: Schedule

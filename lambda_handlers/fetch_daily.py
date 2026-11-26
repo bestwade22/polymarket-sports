@@ -38,15 +38,13 @@ def resolve_fetch_dates(event: Dict[str, Any]) -> list[str]:
 
 def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
     configure_logging()
-    logger.info("=" * 60)
-    logger.info("JOB START: fetch-daily (Lambda handler)")
-    logger.info("=" * 60)
+    logger.info("JOB START fetch-daily")
     
     try:
         apply_secrets()
-        logger.info("Step 1/4: Secrets loaded from Secrets Manager")
+        logger.info("fetch-daily: secrets loaded")
     except Exception as e:
-        logger.error("Step 1/4 FAILED: Could not load secrets: %s", e, exc_info=True)
+        logger.error("fetch-daily: FAILED to load secrets: %s", e, exc_info=True)
         raise
 
     from datetime import date as _date
@@ -54,7 +52,7 @@ def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
     from src.fetch.daily_fetch import run_daily_fetch
 
     days = resolve_fetch_dates(event or {})
-    logger.info("Step 2/4: Resolved fetch dates: %s", days)
+    logger.info("fetch-daily: target ET dates %s", days)
 
     summaries: list[Dict[str, Any]] = []
     total_matched = 0
@@ -62,7 +60,7 @@ def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
     
     for day in days:
         target = _date.fromisoformat(day)
-        logger.info("  Fetching ET date: %s", target.isoformat())
+        logger.info("fetch-daily: starting ET %s", target.isoformat())
         try:
             result = run_daily_fetch(target_date=target)
             matched_count = len(result.get("matched") or [])
@@ -88,18 +86,21 @@ def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
                 }
             )
             logger.info(
-                "  ✓ ET %s: %d matched games, %d unmatched",
+                "fetch-daily: ET %s done, %d matched, %d unmatched",
                 target.isoformat(),
                 matched_count,
                 unmatched_count,
             )
         except Exception as e:
-            logger.error("  ✗ ET %s: Fetch failed: %s", target.isoformat(), e, exc_info=True)
+            logger.error("fetch-daily: ET %s FAILED: %s", target.isoformat(), e, exc_info=True)
             raise
 
-    logger.info("Step 3/4: All dates processed: total %d matched, %d unmatched", 
-                total_matched, total_unmatched)
-    logger.info("Step 4/4: Returning handler response")
+    logger.info(
+        "fetch-daily: complete, %d matched and %d unmatched across %d days",
+        total_matched,
+        total_unmatched,
+        len(days),
+    )
     
     response = {
         "status": "ok",
@@ -113,7 +114,5 @@ def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
         }
     }
     
-    logger.info("=" * 60)
-    logger.info("JOB SUCCESS: fetch-daily completed")
-    logger.info("=" * 60)
+    logger.info("JOB END fetch-daily ok")
     return response

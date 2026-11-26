@@ -69,16 +69,18 @@ def apply_secrets(secrets: Optional[Dict[str, Any]] = None) -> None:
 
 def configure_logging() -> None:
     """Ensure INFO logs reach stdout (Lambda pre-configures the root logger).
-    
-    Uses a detailed format with timestamps and module names for CloudWatch
-    observability across all job steps.
+
+    The format is deliberately compact and single-line: CloudWatch merges
+    the stdout stream into one blob, so a long banner or a multi-line
+    message turns into one unreadable paragraph in the console. One line
+    per event, with the job and step in the message itself, keeps the log
+    stream scannable.
     """
     root = logging.getLogger()
     root.setLevel(logging.INFO)
-    # Detailed format for CloudWatch: timestamp, level, logger name, message
     formatter = logging.Formatter(
-        "%(asctime)s [%(levelname)-8s] %(name)s - %(message)s",
-        datefmt="%Y-%m-%d %H:%M:%S"
+        "%(asctime)s %(levelname)-7s %(message)s",
+        datefmt="%Y-%m-%dT%H:%M:%S",
     )
     if not root.handlers:
         handler = logging.StreamHandler(sys.stdout)

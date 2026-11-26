@@ -19,21 +19,19 @@ logger = logging.getLogger(__name__)
 
 def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
     configure_logging()
-    logger.info("=" * 60)
-    logger.info("JOB START: trade-worker (SQS consumer)")
-    logger.info("=" * 60)
+    logger.info("JOB START trade-worker")
     
     try:
         apply_secrets()
-        logger.info("Step 1/3: Secrets loaded")
+        logger.info("trade-worker: secrets loaded")
     except Exception as e:
-        logger.error("Step 1/3 FAILED: %s", e, exc_info=True)
+        logger.error("trade-worker: FAILED to load secrets: %s", e, exc_info=True)
         raise
 
     from src.trade.buy_sell import TradeWorker
 
     records = (event or {}).get("Records") or []
-    logger.info("Step 2/3: Processing %d SQS messages", len(records))
+    logger.info("trade-worker: processing %d SQS messages", len(records))
     
     worker = TradeWorker()
 
@@ -44,7 +42,7 @@ def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
 
     for idx, record in enumerate(records, 1):
         message_id = str(record.get("messageId") or "")
-        logger.info("  Message %d/%d (ID: %s)...", idx, len(records), message_id)
+        logger.info("trade-worker: message %d/%d id=%s", idx, len(records), message_id)
         try:
             import json
 
@@ -53,16 +51,14 @@ def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
             result = worker.handle_message(body)
             processed += 1
             results.append(result)
-            logger.info("  ✓ Message %s (%s): %s", message_id, msg_type, result.get("status"))
+            logger.info("trade-worker: message %s type=%s status=%s", message_id, msg_type, result.get("status"))
         except Exception as exc:  # noqa: BLE001
             failed += 1
-            logger.exception("  ✗ Message %s FAILED: %s", message_id, exc)
+            logger.exception("trade-worker: message %s FAILED: %s", message_id, exc)
             batch_item_failures.append({"itemIdentifier": message_id})
 
-    logger.info("Step 3/3: Batch complete - processed=%d failed=%d", processed, failed)
-    logger.info("=" * 60)
-    logger.info("JOB SUCCESS: trade-worker completed batch")
-    logger.info("=" * 60)
+    logger.info("trade-worker: batch done, processed=%d failed=%d", processed, failed)
+    logger.info("JOB END trade-worker ok")
     
     return {
         "status": "ok",
