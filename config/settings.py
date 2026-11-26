@@ -281,6 +281,9 @@ class Settings:
     # How long after the last tip-off the listener stays up, to cover the
     # halftime cutoff and any in-flight buy's recovery sell.
     listener_trail_minutes: int = _env_int("LISTENER_TRAIL_MINUTES", 90)
+    # How many heartbeat lines the listener keeps in its DynamoDB health
+    # record. The dashboard shows the most recent ones.
+    listener_health_log_lines: int = _env_int("LISTENER_HEALTH_LOG_LINES", 20)
 
 
 settings = Settings()

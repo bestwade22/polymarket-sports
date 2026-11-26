@@ -34,6 +34,7 @@ rather than a trade.
 import asyncio
 import json
 import logging
+import os
 import random
 import time
 from datetime import date, datetime, timezone
@@ -247,6 +248,11 @@ class Listener:
         self._lowest_bids: dict[str, float] = {}
         self._lowest_bid_ts: dict[str, int] = {}
         self._lowest_dirty: set[str] = set()
+        # The listener's own health record, mirrored into DynamoDB so the
+        # dashboard can show it without reading the ECS log group.
+        self._health_messages: list[dict[str, Any]] = []
+        self._last_heartbeat_ts: int = 0
+        self._started_ts: int = 0
 
     # --- setup -------------------------------------------------------------
 
@@ -834,6 +840,11 @@ class Listener:
                 "No armed games yet; waiting for the snapshot job to arm them"
             )
 
+        self.record_health(
+            "Listener started: %d armed game(s), %d token(s), dry_run=%s"
+            % (len(self.games), len(tokens), self.dry_run)
+        )
+
         market = MarketSocket(tokens)
         sports = SportsSocket()
         user = UserSocket()
@@ -848,6 +859,7 @@ class Listener:
             await asyncio.gather(*tasks)
         except asyncio.CancelledError:
             logger.info("Listener cancelled")
+            self.record_stopped("Listener cancelled")
         finally:
             self._running = False
             for task in tasks:
@@ -875,6 +887,7 @@ class Listener:
             await asyncio.sleep(interval)
             if self.window_closed():
                 logger.info("Listener window has closed; stopping the listener")
+                self.record_stopped("Listener window has closed")
                 self._running = False
                 return
             try:
@@ -894,6 +907,9 @@ class Listener:
         the current best bid for each monitored team and the lowest bid
         seen so far - so the log shows the strategy's inputs moving, not
         just that the process is alive.
+
+        The same heartbeat is written to DynamoDB so the dashboard can show
+        it without reading the ECS log group.
         """
         armed = len(self.games)
         tokens = len(self.token_ids())
@@ -913,12 +929,67 @@ class Listener:
                     "%.4f" % low if low is not None else "-",
                 )
             )
-        logger.info(
-            "Heartbeat: %d armed game(s), %d token(s) subscribed%s",
-            armed,
-            tokens,
-            (" | " + "; ".join(parts)) if parts else "",
+        message = (
+            "Heartbeat: %d armed game(s), %d token(s) subscribed%s"
+            % (armed, tokens, (" | " + "; ".join(parts)) if parts else "")
         )
+        logger.info("%s", message)
+        self.record_health(message)
+
+    def record_health(self, message: str) -> None:
+        """Write the listener's health record to DynamoDB.
+
+        The dashboard reads this record to answer "is the listener working?"
+        without having to open the ECS log group. The record is per ET date,
+        so the dashboard shows the health of whichever day is selected.
+
+        Failures are swallowed: a health write must never take the listener
+        down, and the log line has already been emitted.
+        """
+        day = self.target_date.isoformat() if self.target_date else today_et().isoformat()
+        now = int(time.time())
+        try:
+            self._last_heartbeat_ts = now
+            if not self._started_ts:
+                self._started_ts = now
+            recent = list(self._health_messages)
+            recent.append({"ts": now, "message": message})
+            # Keep the tail short - the dashboard only shows a handful.
+            self._health_messages = recent[-settings.listener_health_log_lines:]
+            self.store.put_listener_health(
+                day,
+                {
+                    "state": "running",
+                    "started_ts": self._started_ts,
+                    "last_heartbeat_ts": now,
+                    "last_message": message,
+                    "armed_count": len(self.games),
+                    "token_count": len(self.token_ids()),
+                    "pid": os.getpid(),
+                    "messages": self._health_messages,
+                },
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("Could not record the listener health: %s", exc)
+
+    def record_stopped(self, reason: str) -> None:
+        """Record that the listener has stopped, and why."""
+        day = self.target_date.isoformat() if self.target_date else today_et().isoformat()
+        now = int(time.time())
+        try:
+            self.store.put_listener_health(
+                day,
+                {
+                    "state": "stopped",
+                    "stopped_ts": now,
+                    "last_heartbeat_ts": self._last_heartbeat_ts,
+                    "last_message": reason,
+                    "pid": os.getpid(),
+                    "messages": list(self._health_messages),
+                },
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("Could not record the listener stop: %s", exc)
 
     def window_closed(self) -> bool:
         """Whether the day's listener window has passed.

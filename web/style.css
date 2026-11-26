@@ -138,6 +138,37 @@ button:hover { border-color: var(--accent); color: var(--accent); }
 .stat.total { border-color: var(--accent); }
 .stat-label { color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: .6px; }
 .stat-value { font-size: 20px; font-weight: 600; font-variant-numeric: tabular-nums; }
+.stat-value.ok { color: var(--green); }
+.stat-value.warn { color: var(--amber); }
+.stat-value.off { color: var(--muted); }
+.stat-note {
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.4;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* --- listener panel ---------------------------------------------------- */
+
+.listener-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 12px;
+  padding: 14px 16px;
+}
+
+.listener-log {
+  max-height: 220px;
+  overflow-y: auto;
+  padding: 10px 16px;
+  border-top: 1px solid var(--border);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12px;
+}
+.listener-log .log-row:last-child { border-bottom: none; }
+.listener-log .log-time { flex: 0 0 130px; }
 
 main { padding: 0 20px 24px; display: flex; flex-direction: column; gap: 20px; }
 

@@ -24,6 +24,7 @@ class FakeStore:
         self.windows = windows or {}
         self.games = games or []
         self.written: list[tuple[str, dict[str, Any]]] = []
+        self.scales: list[tuple[str, int, Optional[int]]] = []
 
     def get_schedule_window(self, day: str):
         return self.windows.get(day)
@@ -34,6 +35,12 @@ class FakeStore:
 
     def get_games_for_date(self, day: str):
         return list(self.games)
+
+    def record_scale(
+        self, day: str, *, desired: int, ts: Optional[int] = None
+    ) -> dict[str, Any]:
+        self.scales.append((day, desired, ts))
+        return {}
 
 
 class FakeEcs:
@@ -150,6 +157,57 @@ class TestRunScaleJob:
         assert result["status"] == "no_window"
         assert result["desired_count"] == 0
         assert ecs.calls == [0]
+
+
+class TestScaleRecording:
+    """The scaler records when the listener was scaled up and down."""
+
+    def test_the_scale_up_is_recorded(self) -> None:
+        store = FakeStore({"2026-11-16": _window()})
+        ecs = FakeEcs(desired=0)
+        run_scale_job(
+            store=store,
+            client=ecs,
+            target_date=_date(),
+            now_ts=FIRST_TIPOFF,
+        )
+        assert store.scales == [("2026-11-16", 1, FIRST_TIPOFF)]
+
+    def test_the_scale_down_is_recorded(self) -> None:
+        store = FakeStore({"2026-11-16": _window()})
+        ecs = FakeEcs(desired=1)
+        now = SECOND_TIPOFF + 10_000
+        run_scale_job(store=store, client=ecs, target_date=_date(), now_ts=now)
+        assert store.scales == [("2026-11-16", 0, now)]
+
+    def test_an_unchanged_count_is_still_recorded(self) -> None:
+        # The one-shot schedule may have scaled the service without the
+        # scaler noticing, so the record is written either way.
+        store = FakeStore({"2026-11-16": _window()})
+        ecs = FakeEcs(desired=1)
+        run_scale_job(
+            store=store,
+            client=ecs,
+            target_date=_date(),
+            now_ts=FIRST_TIPOFF,
+        )
+        assert store.scales == [("2026-11-16", 1, FIRST_TIPOFF)]
+
+    def test_a_failing_record_does_not_fail_the_job(self) -> None:
+        store = FakeStore({"2026-11-16": _window()})
+
+        def _boom(day: str, *, desired: int, ts=None):
+            raise RuntimeError("DynamoDB is unhappy")
+
+        store.record_scale = _boom
+        ecs = FakeEcs(desired=0)
+        result = run_scale_job(
+            store=store,
+            client=ecs,
+            target_date=_date(),
+            now_ts=FIRST_TIPOFF,
+        )
+        assert result["desired_count"] == 1
 
 
 class TestCurrentDesiredCount:

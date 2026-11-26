@@ -174,6 +174,29 @@ def resolve_window(
     return window
 
 
+def record_scale(
+    store: DynamoStore,
+    day: str,
+    *,
+    desired: int,
+    now_ts: Optional[int] = None,
+) -> None:
+    """Record when the listener was scaled up or down for the day.
+
+    The scale record is what the dashboard shows as "scale up time" and
+    "scale down time". It is written on every scale-job run so the record
+    exists even when the desired count did not change (the one-shot
+    schedule may have scaled the service without the scaler noticing).
+
+    A failure here is logged rather than raised: the scale action has
+    already happened, and failing the job would hide that.
+    """
+    try:
+        store.record_scale(day, desired=desired, ts=now_ts)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Could not record the scale time for %s: %s", day, exc)
+
+
 def run_scale_job(
     *,
     target_date: Optional[date] = None,
@@ -188,7 +211,8 @@ def run_scale_job(
     logger.info("scale: start date=%s", target_date.isoformat() if target_date else "today")
     
     dynamo = store or DynamoStore()
-    
+    day = target_date.isoformat() if target_date is not None else today_et().isoformat()
+
     # Step 1: Resolve window
     logger.info("scale: resolving window from DynamoDB")
     try:
@@ -207,10 +231,11 @@ def run_scale_job(
         try:
             changed = set_desired_count(0, client=client)
             logger.info("scale: listener scaled down, changed=%s", changed)
+            record_scale(dynamo, day, desired=0, now_ts=now_ts)
         except Exception as e:
             logger.error("scale: FAILED scaling down: %s", e, exc_info=True)
             raise
-        
+
         return {
             "status": "no_window",
             "desired_count": 0,
@@ -251,6 +276,10 @@ def run_scale_job(
             raise
     else:
         logger.info("scale: no change needed")
+
+    # Record the scale-up / scale-down time so the dashboard can show when
+    # the listener actually started and stopped for the day.
+    record_scale(dynamo, day, desired=desired, now_ts=now_ts)
 
     logger.info("scale: done, open=%s desired=%d changed=%s", open_now, desired, changed)
 

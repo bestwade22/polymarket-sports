@@ -16,6 +16,7 @@ from typing import Any, Optional
 
 from config.settings import EXPORT_DIR, settings, today_et
 from src.api.dynamo_store import DynamoStore
+from src.trade.window import window_is_open
 
 logger = logging.getLogger(__name__)
 
@@ -169,6 +170,79 @@ def trade_view(trade: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _safe_read(read) -> Optional[dict[str, Any]]:
+    """Read a record, returning None when it is missing or unreadable.
+
+    The health, scale and window records are written by other jobs, so any
+    of them may be absent (or the read may fail). The dashboard must still
+    render, so a failed read is logged and treated as "no record".
+    """
+    try:
+        return read()
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Could not read the listener state: %s", exc)
+        return None
+
+
+def listener_health_view(
+    health: Optional[dict[str, Any]],
+    scale: Optional[dict[str, Any]],
+    window: Optional[dict[str, Any]],
+) -> dict[str, Any]:
+    """The listener's health, scale-up/down times and window for the dashboard.
+
+    ``health`` is the record the Fargate listener writes on every heartbeat,
+    ``scale`` the record the scaler writes when it changes the desired
+    count, and ``window`` the derived on-window for the day.
+
+    All three are optional: the dashboard shows what is known and leaves
+    the rest blank, rather than guessing.
+    """
+    health = health or {}
+    scale = scale or {}
+    window = window or {}
+
+    state = health.get("state")
+    last_heartbeat = _num(health.get("last_heartbeat_ts"))
+    now = int(datetime.now(timezone.utc).timestamp())
+
+    # The heartbeat is stale if it is older than three polling intervals.
+    stale_after = max(300, settings.snapshot_interval_minutes * 60 * 3)
+    heartbeat_age = None
+    if last_heartbeat is not None:
+        heartbeat_age = int(now - last_heartbeat)
+        if state == "running" and heartbeat_age > stale_after:
+            state = "stale"
+
+    messages = []
+    for entry in health.get("messages") or []:
+        if not isinstance(entry, dict):
+            continue
+        messages.append(
+            {"ts": _num(entry.get("ts")), "message": entry.get("message")}
+        )
+
+    return {
+        "state": state or "unknown",
+        "started_ts": _num(health.get("started_ts")),
+        "last_heartbeat_ts": last_heartbeat,
+        "heartbeat_age_seconds": heartbeat_age,
+        "stopped_ts": _num(health.get("stopped_ts")),
+        "last_message": health.get("last_message"),
+        "armed_count": _num(health.get("armed_count")),
+        "token_count": _num(health.get("token_count")),
+        "pid": health.get("pid"),
+        "messages": messages,
+        "scale_up_at": _num(scale.get("scale_up_at")),
+        "scale_down_at": _num(scale.get("scale_down_at")),
+        "last_scale_ts": _num(scale.get("last_scale_ts")),
+        "desired_count": _num(scale.get("desired_count")),
+        "window_start_ts": _num(window.get("start_ts")),
+        "window_end_ts": _num(window.get("end_ts")),
+        "window_open": window_is_open(window) if window else None,
+    }
+
+
 def build_dashboard(
     day: Optional[str] = None,
     *,
@@ -186,6 +260,13 @@ def build_dashboard(
 
     items = dynamo.get_games_for_date(target)
     games, trades, logs = _split_items(items)
+
+    # The listener's health, its scale-up/down times and the day's window.
+    # Each read is independent: a missing record is not an error, it just
+    # means the dashboard has nothing to show for that part.
+    health = _safe_read(lambda: dynamo.get_listener_health(target))
+    scale = _safe_read(lambda: dynamo.get_scale_record(target))
+    window = _safe_read(lambda: dynamo.get_schedule_window(target))
 
     trades_by_slug: dict[str, list[dict[str, Any]]] = {}
     for trade in trades:
@@ -228,6 +309,7 @@ def build_dashboard(
         "date": target,
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "games": game_views,
+        "listener": listener_health_view(health, scale, window),
         "trades": [trade_view(t) for t in trades],
         "logs": [
             {

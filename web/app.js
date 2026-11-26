@@ -153,8 +153,104 @@
     total.className = "stat-value " + signClass(summary.total_pnl);
   }
 
-  function matchupCell(g) {
-    var text = escapeHtml(g.matchup || "");
+  /* --- listener health --------------------------------------------------- */
+
+  var LISTENER_STATES = {
+    running: { cls: "ok", label: "Running" },
+    stale: { cls: "warn", label: "Stale" },
+    stopped: { cls: "off", label: "Stopped" },
+    unknown: { cls: "off", label: "Unknown" }
+  };
+
+  function setStat(id, value, note, cls) {
+    var node = el(id);
+    node.textContent = value;
+    node.className = "stat-value" + (cls ? " " + cls : "");
+    if (note !== undefined) {
+      var noteNode = el(id + "-note");
+      if (noteNode) noteNode.textContent = note;
+    }
+  }
+
+  function fmtDuration(seconds) {
+    if (seconds === null || seconds === undefined) return "";
+    var n = Number(seconds);
+    if (isNaN(n)) return "";
+    if (n < 60) return n + "s ago";
+    if (n < 3600) return Math.floor(n / 60) + "m ago";
+    return Math.floor(n / 3600) + "h " + Math.floor((n % 3600) / 60) + "m ago";
+  }
+
+  function renderListener(listener) {
+    listener = listener || {};
+    var state = String(listener.state || "unknown").toLowerCase();
+    var meta = LISTENER_STATES[state] || LISTENER_STATES.unknown;
+
+    var note = "";
+    if (listener.last_message) note = listener.last_message;
+    setStat("l-state", meta.label, note, meta.cls);
+
+    // Scale up / down. The recorded time is the actual transition; when
+    // the listener never ran, the planned window time is shown instead.
+    var up = listener.scale_up_at || listener.started_ts;
+    setStat(
+      "l-scale-up",
+      up ? fmtHktFromEpoch(up) : "-",
+      up
+        ? (listener.scale_up_at ? "actual scale-up" : "listener started")
+        : (listener.window_start_ts ? "planned window start" : "")
+    );
+
+    var down = listener.scale_down_at;
+    setStat(
+      "l-scale-down",
+      down ? fmtHktFromEpoch(down) : "-",
+      down ? "actual scale-down" : (listener.window_end_ts ? "planned window end" : "")
+    );
+
+    var hb = listener.last_heartbeat_ts;
+    setStat(
+      "l-heartbeat",
+      hb ? fmtHktFromEpoch(hb) : "-",
+      hb ? fmtDuration(listener.heartbeat_age_seconds) : "no heartbeat yet"
+    );
+
+    var windowText = "-";
+    var windowNote = "";
+    if (listener.window_start_ts && listener.window_end_ts) {
+      windowText = fmtHktFromEpoch(listener.window_start_ts);
+      windowNote = "to " + fmtHktFromEpoch(listener.window_end_ts);
+    }
+    setStat("l-window", windowText, windowNote);
+
+    var armed = listener.armed_count;
+    var tokens = listener.token_count;
+    setStat(
+      "l-armed",
+      (armed === null || armed === undefined ? "-" : armed) + " / " +
+        (tokens === null || tokens === undefined ? "-" : tokens),
+      listener.pid ? "pid " + listener.pid : ""
+    );
+
+    // The listener's own log lines, newest last.
+    var box = el("listener-log");
+    box.innerHTML = "";
+    var messages = listener.messages || [];
+    if (!messages.length) {
+      box.innerHTML = '<div class="empty">No listener messages recorded</div>';
+      return;
+    }
+    messages.forEach(function (m) {
+      var row = document.createElement("div");
+      row.className = "log-row";
+      row.innerHTML =
+        '<span class="log-time">' + escapeHtml(fmtHktFromEpoch(m.ts)) + "</span>" +
+        "<span>" + escapeHtml(m.message || "") + "</span>";
+      box.appendChild(row);
+    });
+  }
+
+  function matchupCell(g) {    var text = escapeHtml(g.matchup || "");
     var url = g.polymarket_url;
     if (!url) return text;
     return '<a href="' + escapeHtml(url) + '" target="_blank" rel="noopener noreferrer"' +
@@ -260,6 +356,7 @@
       })
       .then(function (data) {
         renderSummary(data.summary);
+        renderListener(data.listener);
         renderGames(data.games);
         renderTrades(data.trades);
         renderLogs(data.logs);

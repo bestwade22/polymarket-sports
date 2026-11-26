@@ -43,6 +43,10 @@ DATE_PK_PREFIX = "DATE#"
 META_SK = "META"
 BATCH_SK = "BATCH"
 WINDOW_SK = "WINDOW"
+# The listener's own health record: written by the Fargate listener.
+HEALTH_SK = "HEALTH"
+# The scaler's record of when the listener was actually scaled up and down.
+SCALE_SK = "SCALE"
 GSI1_PK = "gsi1pk"
 GSI1_SK = "gsi1sk"
 
@@ -238,6 +242,94 @@ class DynamoStore:
         resp = self.client.get_item(
             TableName=self.table_name,
             Key={"pk": _serialize(date_pk(day)), "sk": _serialize(WINDOW_SK)},
+            ConsistentRead=True,
+        )
+        return _to_python(resp.get("Item"))
+
+    def put_listener_health(self, day: str, health: dict[str, Any]) -> None:
+        """Write the listener's health record for a date.
+
+        The record is what the dashboard shows as "listener health": whether
+        the listener is running, when it last said something, and the recent
+        heartbeat lines. It is keyed per ET date so the dashboard can show
+        the health of any day it is looking at.
+        """
+        payload = dict(health)
+        payload.update({"pk": date_pk(day), "sk": HEALTH_SK})
+        payload["date"] = day
+        self.put_item(payload)
+
+    def get_listener_health(self, day: str) -> Optional[dict[str, Any]]:
+        """The listener health record for a date, or None."""
+        resp = self.client.get_item(
+            TableName=self.table_name,
+            Key={"pk": _serialize(date_pk(day)), "sk": _serialize(HEALTH_SK)},
+            ConsistentRead=True,
+        )
+        return _to_python(resp.get("Item"))
+
+    def record_scale(
+        self, day: str, *, desired: int, ts: Optional[int] = None
+    ) -> dict[str, Any]:
+        """Record an actual scale-up or scale-down for the date.
+
+        The **first** scale-up is kept (``if_not_exists``), so the dashboard
+        shows when the listener started rather than when the scaler last
+        touched it. The first scale-down is kept for the same reason - the
+        last one would drift forward every time the five-minute scale job
+        re-asserts a desired count of 0.
+
+        A scale-down is only recorded once the listener has actually been
+        up (the scale-up exists). Before the day's window opens the scale
+        job constantly re-asserts a desired count of 0, and recording that
+        would show a scale-down time for a listener that never ran.
+        """
+        ts = int(ts if ts is not None else time.time())
+        names = {"#up": "scale_up_at", "#down": "scale_down_at"}
+        values = {
+            ":ts": _serialize(ts),
+            ":desired": _serialize(int(desired)),
+            ":ttl": _serialize(self._ttl_timestamp()),
+        }
+        if int(desired) >= 1:
+            expression = (
+                "SET #up = if_not_exists(#up, :ts), "
+                "last_scale_ts = :ts, desired_count = :desired, expires_at = :ttl"
+            )
+            condition = None
+        else:
+            expression = (
+                "SET #down = if_not_exists(#down, :ts), "
+                "last_scale_ts = :ts, desired_count = :desired, expires_at = :ttl"
+            )
+            # Only record the scale-down if the listener was actually up.
+            condition = "attribute_exists(#up)"
+
+        request: dict[str, Any] = {
+            "TableName": self.table_name,
+            "Key": {"pk": _serialize(date_pk(day)), "sk": _serialize(SCALE_SK)},
+            "UpdateExpression": expression,
+            "ExpressionAttributeNames": names,
+            "ExpressionAttributeValues": values,
+        }
+        if condition:
+            request["ConditionExpression"] = condition
+        try:
+            self.client.update_item(**request)
+        except ClientError as exc:
+            code = exc.response.get("Error", {}).get("Code", "")
+            if code == "ConditionalCheckFailedException":
+                # No scale-up recorded yet - the listener never ran.
+                logger.debug("No scale-up recorded for %s; not recording a scale-down", day)
+                return {}
+            raise
+        return {"scale_up_at": ts, "scale_down_at": ts, "desired_count": int(desired)}
+
+    def get_scale_record(self, day: str) -> Optional[dict[str, Any]]:
+        """The scale record for a date, or None when nothing was recorded."""
+        resp = self.client.get_item(
+            TableName=self.table_name,
+            Key={"pk": _serialize(date_pk(day)), "sk": _serialize(SCALE_SK)},
             ConsistentRead=True,
         )
         return _to_python(resp.get("Item"))
