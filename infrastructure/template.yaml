@@ -378,6 +378,29 @@ Resources:
         CookiesConfig:
           CookieBehavior: none
 
+  # The managed CachingOptimized policy caches for 24 hours, which means a
+  # new upload in S3 is invisible at the edge for a whole day. The deploy
+  # invalidates the cache, but a short TTL is the belt-and-braces: even if
+  # an invalidation is missed, the new files appear within a minute.
+  DashboardStaticCachePolicy:
+    Type: AWS::CloudFront::CachePolicy
+    Properties:
+      CachePolicyConfig:
+        Name: !Sub "${AWS::StackName}-dashboard-static"
+        Comment: Short TTL so a dashboard update shows up quickly
+        DefaultTTL: 60
+        MinTTL: 0
+        MaxTTL: 300
+        ParametersInCacheKeyAndForwardedToOrigin:
+          EnableAcceptEncodingGzip: true
+          EnableAcceptEncodingBrotli: true
+          CookiesConfig:
+            CookieBehavior: none
+          HeadersConfig:
+            HeaderBehavior: none
+          QueryStringsConfig:
+            QueryStringBehavior: all
+
   DashboardDistribution:
     Type: AWS::CloudFront::Distribution
     Properties:
@@ -404,7 +427,7 @@ Resources:
           TargetOriginId: DashboardBucket
           ViewerProtocolPolicy: redirect-to-https
           AllowedMethods: [GET, HEAD]
-          CachePolicyId: 658327ea-f89d-4fab-a63d-7e88639e58f6
+          CachePolicyId: !Ref DashboardStaticCachePolicy
         CacheBehaviors:
           - PathPattern: /dashboard
             TargetOriginId: DashboardApi
@@ -828,6 +851,9 @@ Outputs:
     Value: !Sub "https://${DashboardApi}.execute-api.${AWS::Region}.amazonaws.com/Prod/dashboard"
   DashboardUrl:
     Value: !Sub "https://${DashboardDistribution.DomainName}"
+  DashboardDistributionId:
+    Description: The CloudFront distribution ID, for cache invalidation.
+    Value: !Ref DashboardDistribution
   ListenerCluster:
     Value: !Ref Cluster
   ListenerServiceName:

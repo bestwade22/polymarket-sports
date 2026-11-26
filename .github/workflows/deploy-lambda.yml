@@ -344,6 +344,27 @@ jobs:
           fi
           aws s3 sync web/ "s3://${BUCKET}/" --delete --exclude ".*"
 
+      # CloudFront caches the static files at the edge for 24 hours (the
+      # managed CachingOptimized policy), so a new upload in S3 is not
+      # visible until the cached copies expire. Invalidate them so the
+      # dashboard shows the new code straight after the deploy.
+      - name: Invalidate the CloudFront cache
+        run: |
+          set -euo pipefail
+          DISTRIBUTION="$(aws cloudformation describe-stacks \
+            --stack-name "$STACK_NAME" \
+            --query "Stacks[0].Outputs[?OutputKey=='DashboardDistributionId'].OutputValue" \
+            --output text 2>/dev/null || echo "")"
+          if [[ -z "$DISTRIBUTION" || "$DISTRIBUTION" == "None" ]]; then
+            echo "No dashboard distribution in the stack outputs; skipping."
+            exit 0
+          fi
+          echo "Invalidating distribution $DISTRIBUTION"
+          aws cloudfront create-invalidation \
+            --distribution-id "$DISTRIBUTION" \
+            --paths "/index.html" "/app.js" "/style.css" \
+            --query "Invalidation.Id" --output text
+
       - name: Diagnose CloudFormation failure
         if: failure()
         run: |

@@ -243,6 +243,14 @@ Deploy into **ap-east-1 (Hong Kong)**, the same region as
 The dashboard is a static site on S3 behind CloudFront, with `/dashboard`
 routed to the API Gateway so the browser never sees AWS credentials.
 
+The static files use a **60-second** CloudFront TTL, and the deploy
+workflow also **invalidates** the CloudFront cache after uploading them.
+Both together mean a dashboard change is visible within about a minute
+rather than waiting out the default 24-hour managed cache TTL.
+
+The `/dashboard` API route uses the managed **CachingDisabled** policy, so
+the dashboard always reads live data from DynamoDB.
+
 ### Credentials
 
 The bot reads its credentials from AWS Secrets Manager at startup, using
