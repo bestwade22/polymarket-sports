@@ -241,6 +241,12 @@ class Listener:
         self.target_date: Optional[date] = None
         self._claimed: set[str] = set()
         self._running = True
+        # The running minimum bid for the monitored team of each game, and
+        # the slug of the games whose minimum has changed since the last
+        # flush to DynamoDB.
+        self._lowest_bids: dict[str, float] = {}
+        self._lowest_bid_ts: dict[str, int] = {}
+        self._lowest_dirty: set[str] = set()
 
     # --- setup -------------------------------------------------------------
 
@@ -340,6 +346,72 @@ class Listener:
                 return str(entry.get("name"))
         return None
 
+    def record_lowest_price(self, game: dict[str, Any], best_bid: Optional[float]) -> None:
+        """Track the lowest bid the monitored team ever traded at.
+
+        The trigger rule fires on a 50% drop, but the *interesting* number
+        for a human is how far the price actually fell. The listener sees
+        every tick, so it keeps the running minimum for the monitored team
+        and writes it back to DynamoDB so the dashboard can show it.
+
+        The minimum is kept in memory and flushed on a timer (and on the
+        trigger) rather than on every tick - writing on every tick would
+        put the listener in a hot loop against DynamoDB.
+        """
+        if best_bid is None:
+            return
+        slug = str(game.get("slug"))
+        token_id = str(game.get("monitored_token_id") or "")
+        if not slug or not token_id:
+            return
+
+        price = float(best_bid)
+        current = self._lowest_bids.get(slug)
+        if current is not None and price >= current:
+            return
+
+        self._lowest_bids[slug] = price
+        self._lowest_bid_ts[slug] = int(time.time())
+        self._lowest_dirty.add(slug)
+
+        logger.info(
+            "Lowest bid for %s (%s): %.4f",
+            slug,
+            game.get("monitored_team"),
+            price,
+        )
+
+    def flush_lowest_prices(self) -> int:
+        """Write the tracked lowest bids to DynamoDB.
+
+        Returns the number of games written. Failures are logged and
+        swallowed: losing the low-water mark must never stop the listener
+        from trading.
+        """
+        if not self._lowest_dirty:
+            return 0
+        written = 0
+        for slug in list(self._lowest_dirty):
+            price = self._lowest_bids.get(slug)
+            if price is None:
+                self._lowest_dirty.discard(slug)
+                continue
+            try:
+                self.store.update_game(
+                    slug,
+                    {
+                        "lowest_bid": price,
+                        "lowest_bid_ts": self._lowest_bid_ts.get(slug),
+                    },
+                )
+                written += 1
+                self._lowest_dirty.discard(slug)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("Could not write the lowest bid for %s: %s", slug, exc)
+        if written:
+            logger.info("Wrote the lowest bid for %d game(s)", written)
+        return written
+
     async def handle_market_frame(self, raw: str) -> None:
         """Process one frame from the market socket."""
         if raw.strip() in ("PONG", "PING"):
@@ -394,6 +466,12 @@ class Listener:
 
         best_bid = self.books.best_bid(token_id)
         best_ask = self.books.best_ask(token_id)
+
+        # Track the low-water mark of the monitored team's bid. This runs
+        # for the monitored team only - the opponent's price is not what
+        # the dashboard reports.
+        if team == str(game.get("monitored_team") or ""):
+            self.record_lowest_price(game, best_bid)
 
         decision = self.build_decision(game, team, best_bid, best_ask)
         if not decision.fired:
@@ -511,6 +589,14 @@ class Listener:
                 "trigger_threshold": decision.threshold,
             },
         )
+        # Persist the low-water mark now, so the dashboard shows it even if
+        # the listener is stopped before the next flush.
+        lowest = self._lowest_bids.get(slug)
+        if lowest is not None:
+            self.store.update_game(
+                slug,
+                {"lowest_bid": lowest, "lowest_bid_ts": self._lowest_bid_ts.get(slug)},
+            )
         self.store.put_log(
             slug,
             "trigger fired",
@@ -736,6 +822,13 @@ class Listener:
         self.target_date = target_date
         self.load_games(target_date)
         tokens = self.token_ids()
+        logger.info(
+            "Listener starting: target date %s, %d armed game(s), %d token(s), dry_run=%s",
+            self.target_date.isoformat() if self.target_date else "today",
+            len(self.games),
+            len(tokens),
+            self.dry_run,
+        )
         if not tokens:
             logger.info(
                 "No armed games yet; waiting for the snapshot job to arm them"
@@ -772,6 +865,10 @@ class Listener:
         The same loop enforces the day's listener window: once the window
         has closed there is no game left to trade, so the listener stops
         itself rather than running until the scale-down schedule fires.
+
+        This loop also emits the listener's heartbeat. Without it there is
+        nothing in the log between start-up and the first trigger, so an
+        idle-but-healthy listener is indistinguishable from a dead one.
         """
         interval = max(30, settings.snapshot_interval_minutes * 60)
         while self._running:
@@ -786,6 +883,42 @@ class Listener:
                 raise
             except Exception as exc:  # noqa: BLE001
                 logger.warning("Subscription refresh failed: %s", exc)
+            self.log_heartbeat()
+            self.flush_lowest_prices()
+
+    def log_heartbeat(self) -> None:
+        """Log the listener's current state.
+
+        The heartbeat is the answer to "is the listener working?". It
+        reports the number of armed games, the number of subscribed tokens,
+        the current best bid for each monitored team and the lowest bid
+        seen so far - so the log shows the strategy's inputs moving, not
+        just that the process is alive.
+        """
+        armed = len(self.games)
+        tokens = len(self.token_ids())
+        parts = []
+        for game in self.games:
+            slug = str(game.get("slug"))
+            token_id = str(game.get("monitored_token_id") or "")
+            team = game.get("monitored_team") or "?"
+            if not token_id:
+                continue
+            bid = self.books.best_bid(token_id)
+            low = self._lowest_bids.get(slug)
+            parts.append(
+                "%s bid=%s low=%s" % (
+                    team,
+                    "%.4f" % bid if bid is not None else "-",
+                    "%.4f" % low if low is not None else "-",
+                )
+            )
+        logger.info(
+            "Heartbeat: %d armed game(s), %d token(s) subscribed%s",
+            armed,
+            tokens,
+            (" | " + "; ".join(parts)) if parts else "",
+        )
 
     def window_closed(self) -> bool:
         """Whether the day's listener window has passed.

@@ -83,8 +83,21 @@ def _split_items(items: list[dict[str, Any]]) -> tuple[list[dict], list[dict], l
     return games, trades, logs
 
 
+def _polymarket_url(slug: Any) -> str:
+    """The Polymarket event page for a game's slug.
+
+    The bot's slugs are the Gamma event slugs (``nba-det-orl-2026-11-24``),
+    which map directly onto the public event URL.
+    """
+    text = str(slug or "").strip()
+    if not text:
+        return ""
+    return f"https://polymarket.com/event/{text}"
+
+
 def game_view(game: dict[str, Any]) -> dict[str, Any]:
     """A compact view of one game for the dashboard."""
+    slug = str(game.get("slug") or "")
     return {
         "slug": game.get("slug"),
         "status": game.get("status"),
@@ -101,6 +114,14 @@ def game_view(game: dict[str, Any]) -> dict[str, Any]:
         "pre_game_mid": _num(game.get("monitored_pre_game_mid")),
         "pre_game_bid": _num(game.get("monitored_pre_game_bid")),
         "pre_game_ask": _num(game.get("monitored_pre_game_ask")),
+        # When the pre-game snapshot was taken, and the lowest bid the
+        # listener saw for the monitored team.
+        "pre_game_snapshot_ts": _num(
+            game.get("pre_game_snapshot_ts") or game.get("pre_game_snapshotted_at")
+        ),
+        "lowest_bid": _num(game.get("lowest_bid")),
+        "lowest_bid_ts": _num(game.get("lowest_bid_ts")),
+        "polymarket_url": _polymarket_url(slug),
         "trigger_threshold": _num(game.get("trigger_threshold")),
         "trigger_price": _num(game.get("trigger_price")),
         "triggered_at": _num(game.get("triggered_at")),

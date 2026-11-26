@@ -13,8 +13,20 @@
       <h1>NBA Polymarket Bot</h1>
     </div>
     <div class="controls">
-      <label for="date-input">Date (ET)</label>
-      <input type="date" id="date-input">
+      <div class="date-picker">
+        <button type="button" id="date-prev" class="cal-btn" aria-label="Previous day">&#8249;</button>
+        <input type="date" id="date-input">
+        <button type="button" id="date-next" class="cal-btn" aria-label="Next day">&#8250;</button>
+        <button type="button" id="date-today" class="cal-btn wide">Today</button>
+        <div class="calendar" id="calendar" hidden>
+          <div class="cal-header">
+            <button type="button" id="cal-prev" class="cal-btn" aria-label="Previous month">&#8249;</button>
+            <span class="cal-title" id="cal-title"></span>
+            <button type="button" id="cal-next" class="cal-btn" aria-label="Next month">&#8250;</button>
+          </div>
+          <div class="cal-grid" id="cal-grid"></div>
+        </div>
+      </div>
       <label class="checkbox"><input type="checkbox" id="live-toggle"> Live prices</label>
       <button id="refresh-btn">Refresh</button>
     </div>
@@ -38,11 +50,13 @@
         <table id="games-table">
           <thead>
             <tr>
-              <th>Tip-off</th>
+              <th>Tip-off (HKT)</th>
               <th>Matchup</th>
               <th>Records</th>
               <th>Pre-game</th>
+              <th>Pre-game captured (HKT)</th>
               <th>Monitored</th>
+              <th>Lowest seen</th>
               <th>Threshold</th>
               <th>Trigger</th>
               <th>Status</th>
@@ -59,7 +73,7 @@
         <table id="trades-table">
           <thead>
             <tr>
-              <th>Time</th>
+              <th>Time (HKT)</th>
               <th>Matchup</th>
               <th>Team</th>
               <th>Buy</th>

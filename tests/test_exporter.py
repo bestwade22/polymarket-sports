@@ -125,3 +125,40 @@ def test_build_dashboard_ignores_unfilled_trades_in_realised_pnl():
     items = [_game_item(), _trade_item(status="buy_unfilled")]
     payload = build_dashboard("2026-11-16", store=FakeStore(items))
     assert payload["summary"]["realised_pnl"] == 0
+
+
+def test_game_view_exposes_the_lowest_bid_and_the_snapshot_time():
+    view = game_view(
+        _game_item(
+            lowest_bid=0.34,
+            lowest_bid_ts=1794875400,
+            pre_game_snapshot_ts=1794870000,
+        )
+    )
+    assert view["lowest_bid"] == 0.34
+    assert view["lowest_bid_ts"] == 1794875400
+    assert view["pre_game_snapshot_ts"] == 1794870000
+
+
+def test_game_view_falls_back_to_the_older_snapshot_field():
+    view = game_view(_game_item(pre_game_snapshotted_at=1794870000))
+    assert view["pre_game_snapshot_ts"] == 1794870000
+
+
+def test_game_view_without_a_lowest_bid_has_none():
+    view = game_view(_game_item())
+    assert view["lowest_bid"] is None
+    assert view["pre_game_snapshot_ts"] is None
+
+
+def test_game_view_builds_the_polymarket_event_url():
+    view = game_view(_game_item())
+    assert view["polymarket_url"] == (
+        "https://polymarket.com/event/nba-phi-bkn-2026-11-16"
+    )
+
+
+def test_game_view_without_a_slug_has_no_polymarket_url():
+    view = game_view(_game_item(slug=""))
+    assert view["polymarket_url"] == ""
+

@@ -9,6 +9,10 @@
  *   1. ?api=
  *   2. window.API_BASE (set by an inline script or a config.js)
  *   3. "/dashboard"  (the API Gateway path)
+ *
+ * All times shown are Hong Kong time (HKT). The bot's dates are ET dates,
+ * but the reader is in Hong Kong, so every timestamp is rendered in HKT
+ * and the date input selects an ET date.
  */
 
 (function () {
@@ -26,29 +30,68 @@
 
   function etToday() {
     // The bot's dates are ET dates, so the default date must be the ET today.
-    var now = new Date();
-    var parts = new Intl.DateTimeFormat("en-CA", {
-      timeZone: "America/New_York",
-      year: "numeric", month: "2-digit", day: "2-digit"
-    }).formatToParts(now);
-    var map = {};
-    parts.forEach(function (p) { map[p.type] = p.value; });
-    return map.year + "-" + map.month + "-" + map.day;
+    return inZone("America/New_York", new Date(), "date");
   }
 
-  function fmtTime(iso) {
+  function inZone(timeZone, date, kind) {
+    var parts = new Intl.DateTimeFormat("en-CA", {
+      timeZone: timeZone,
+      year: "numeric", month: "2-digit", day: "2-digit",
+      hour: "2-digit", minute: "2-digit", hour12: false
+    }).formatToParts(date);
+    var map = {};
+    parts.forEach(function (p) { map[p.type] = p.value; });
+    if (kind === "date") {
+      return map.year + "-" + map.month + "-" + map.day;
+    }
+    if (kind === "month") {
+      return map.year + "-" + map.month;
+    }
+    if (kind === "hour") {
+      // "24" means midnight in some locales; normalise it to "00".
+      return map.hour === "24" ? "00" : map.hour;
+    }
+    return map.minute;
+  }
+
+  /* --- date helpers ----------------------------------------------------- */
+
+  function pad(n) { return (n < 10 ? "0" : "") + n; }
+
+  function parseIsoDate(text) {
+    var m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(text || ""));
+    if (!m) return null;
+    return new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]));
+  }
+
+  function isoDate(date) {
+    return date.getFullYear() + "-" + pad(date.getMonth() + 1) + "-" + pad(date.getDate());
+  }
+
+  function shiftDays(isoText, delta) {
+    var d = parseIsoDate(isoText);
+    if (!d) return isoText;
+    d.setDate(d.getDate() + delta);
+    return isoDate(d);
+  }
+
+  /* --- formatting ------------------------------------------------------- */
+
+  function fmtHkt(iso) {
     if (!iso) return "-";
     var d = new Date(iso);
     if (isNaN(d.getTime())) return String(iso);
-    var et = new Intl.DateTimeFormat("en-GB", {
-      timeZone: "America/New_York",
-      hour: "2-digit", minute: "2-digit", hour12: false
-    }).format(d);
-    var hkt = new Intl.DateTimeFormat("en-GB", {
-      timeZone: "Asia/Hong_Kong",
-      hour: "2-digit", minute: "2-digit", hour12: false
-    }).format(d);
-    return et + " ET / " + hkt + " HKT";
+    var day = inZone("Asia/Hong_Kong", d, "date");
+    var hour = inZone("Asia/Hong_Kong", d, "hour");
+    var minute = inZone("Asia/Hong_Kong", d, "minute");
+    return day + " " + hour + ":" + minute;
+  }
+
+  function fmtHktFromEpoch(seconds) {
+    if (seconds === null || seconds === undefined || seconds === "") return "-";
+    var n = Number(seconds);
+    if (isNaN(n) || n === 0) return "-";
+    return fmtHkt(new Date(n * 1000));
   }
 
   function fmtPrice(v) {
@@ -61,7 +104,7 @@
   function fmtPnl(v) {
     if (v === null || v === undefined) return "-";
     var n = Number(v);
-    if (isNaN(n)) return String(v);
+    if (isNaN(n)) return "-";
     return (n >= 0 ? "+" : "") + n.toFixed(3);
   }
 
@@ -87,6 +130,8 @@
 
   function el(id) { return document.getElementById(id); }
 
+  /* --- rendering -------------------------------------------------------- */
+
   function renderSummary(summary) {
     summary = summary || {};
     el("s-games").textContent = summary.game_count != null ? summary.game_count : "-";
@@ -108,11 +153,19 @@
     total.className = "stat-value " + signClass(summary.total_pnl);
   }
 
+  function matchupCell(g) {
+    var text = escapeHtml(g.matchup || "");
+    var url = g.polymarket_url;
+    if (!url) return text;
+    return '<a href="' + escapeHtml(url) + '" target="_blank" rel="noopener noreferrer"' +
+      ' title="Open on Polymarket">' + text + " &#8599;</a>";
+  }
+
   function renderGames(games) {
     var tbody = document.querySelector("#games-table tbody");
     tbody.innerHTML = "";
     if (!games || !games.length) {
-      tbody.innerHTML = '<tr><td colspan="8" class="empty">No games for this date</td></tr>';
+      tbody.innerHTML = '<tr><td colspan="10" class="empty">No games for this date</td></tr>';
       return;
     }
     games.forEach(function (g) {
@@ -122,13 +175,24 @@
         return escapeHtml(team) + " " + fmtPrice(p.mid);
       }).join(" &middot; ");
 
+      // The lowest bid the listener saw, and how far it fell from the
+      // pre-game mid - the second is what makes the number meaningful.
+      var lowest = g.lowest_bid;
+      var drop = "";
+      if (lowest !== null && lowest !== undefined && g.pre_game_mid) {
+        var pct = (1 - Number(lowest) / Number(g.pre_game_mid)) * 100;
+        drop = ' <span class="muted">(' + (pct >= 0 ? "-" : "+") + Math.abs(pct).toFixed(1) + "%)</span>";
+      }
+
       var tr = document.createElement("tr");
       tr.innerHTML =
-        "<td>" + fmtTime(g.start_time) + "</td>" +
-        "<td>" + escapeHtml(g.matchup) + "</td>" +
+        "<td>" + fmtHkt(g.start_time) + "</td>" +
+        "<td>" + matchupCell(g) + "</td>" +
         '<td class="muted">' + escapeHtml(g.away_record || "") + " / " + escapeHtml(g.home_record || "") + "</td>" +
         "<td>" + (pre || "-") + "</td>" +
+        "<td>" + fmtHktFromEpoch(g.pre_game_snapshot_ts) + "</td>" +
         "<td>" + escapeHtml(g.monitored_team || "-") + "</td>" +
+        '<td class="num">' + fmtPrice(lowest) + drop + "</td>" +
         '<td class="num">' + fmtPrice(g.trigger_threshold) + "</td>" +
         '<td class="num">' + fmtPrice(g.trigger_price) + "</td>" +
         "<td>" + pill(g.status) + "</td>";
@@ -146,7 +210,7 @@
     trades.forEach(function (t) {
       var tr = document.createElement("tr");
       tr.innerHTML =
-        "<td>" + fmtTime(t.ts ? new Date(t.ts * 1000).toISOString() : null) + "</td>" +
+        "<td>" + fmtHktFromEpoch(t.ts) + "</td>" +
         "<td>" + escapeHtml(t.matchup || t.slug) + "</td>" +
         "<td>" + escapeHtml(t.team || "-") + "</td>" +
         '<td class="num">' + fmtPrice(t.buy_price) + "</td>" +
@@ -169,9 +233,9 @@
     logs.slice().reverse().forEach(function (l) {
       var row = document.createElement("div");
       row.className = "log-row";
-      var time = l.ts ? new Date(l.ts * 1000).toISOString().substring(11, 19) : "--:--:--";
+      var time = l.ts ? fmtHktFromEpoch(l.ts) : "-";
       row.innerHTML =
-        '<span class="log-time">' + time + "</span>" +
+        '<span class="log-time">' + escapeHtml(time) + "</span>" +
         '<span class="log-slug">' + escapeHtml(l.slug || "") + "</span>" +
         "<span>" + escapeHtml(l.message || "") + "</span>";
       box.appendChild(row);
@@ -202,7 +266,7 @@
         var cfg = data.config || {};
         setStatus(true,
           "Updated " + new Date().toLocaleTimeString() +
-          " | date " + data.date +
+          " | ET date " + data.date +
           " | drop ratio " + cfg.price_drop_ratio +
           " | " + (cfg.dry_run ? "DRY RUN" : "LIVE"));
       })
@@ -211,11 +275,114 @@
       });
   }
 
+  /* --- calendar --------------------------------------------------------- */
+
+  var calMonth = null;   // "YYYY-MM" of the month on screen
+  var calAnchor = null;  // the ET date the calendar opens on
+
+  function monthLabel(ym) {
+    var parts = ym.split("-");
+    var d = new Date(Number(parts[0]), Number(parts[1]) - 1, 1);
+    return d.toLocaleDateString("en-GB", { month: "long", year: "numeric" });
+  }
+
+  function renderCalendar() {
+    if (!calMonth) return;
+    el("cal-title").textContent = monthLabel(calMonth);
+
+    var parts = calMonth.split("-");
+    var year = Number(parts[0]);
+    var month = Number(parts[1]) - 1;
+    var first = new Date(year, month, 1);
+    var daysInMonth = new Date(year, month + 1, 0).getDate();
+    // Monday-first grid.
+    var lead = (first.getDay() + 6) % 7;
+
+    var grid = el("cal-grid");
+    grid.innerHTML = "";
+    ["Mo", "Tu", "We", "Th", "Fr", "Sa", "Su"].forEach(function (d) {
+      var cell = document.createElement("div");
+      cell.className = "cal-dow";
+      cell.textContent = d;
+      grid.appendChild(cell);
+    });
+
+    var selected = el("date-input").value;
+    for (var i = 0; i < lead; i++) {
+      grid.appendChild(document.createElement("div"));
+    }
+    for (var day = 1; day <= daysInMonth; day++) {
+      (function (day) {
+        var cell = document.createElement("button");
+        cell.type = "button";
+        cell.className = "cal-day";
+        cell.textContent = String(day);
+        var iso = year + "-" + pad(month + 1) + "-" + pad(day);
+        if (iso === selected) cell.classList.add("selected");
+        cell.addEventListener("click", function () {
+          el("date-input").value = iso;
+          closeCalendar();
+          refresh();
+        });
+        grid.appendChild(cell);
+      })(day);
+    }
+  }
+
+  function openCalendar() {
+    calAnchor = el("date-input").value || etToday();
+    calMonth = calAnchor.slice(0, 7);
+    el("calendar").hidden = false;
+    renderCalendar();
+  }
+
+  function closeCalendar() {
+    el("calendar").hidden = true;
+  }
+
+  function shiftMonth(delta) {
+    var parts = calMonth.split("-");
+    var d = new Date(Number(parts[0]), Number(parts[1]) - 1 + delta, 1);
+    calMonth = d.getFullYear() + "-" + pad(d.getMonth() + 1);
+    renderCalendar();
+  }
+
+  /* --- init ------------------------------------------------------------- */
+
   function init() {
     el("date-input").value = etToday();
+
     el("refresh-btn").addEventListener("click", refresh);
     el("live-toggle").addEventListener("change", refresh);
-    el("date-input").addEventListener("change", refresh);
+    el("date-input").addEventListener("change", function () {
+      closeCalendar();
+      refresh();
+    });
+
+    el("date-prev").addEventListener("click", function () {
+      el("date-input").value = shiftDays(el("date-input").value, -1);
+      refresh();
+    });
+    el("date-next").addEventListener("click", function () {
+      el("date-input").value = shiftDays(el("date-input").value, 1);
+      refresh();
+    });
+    el("date-today").addEventListener("click", function () {
+      el("date-input").value = etToday();
+      refresh();
+    });
+
+    // Clicking the date field opens the calendar; the native picker stays
+    // available through the calendar button next to it.
+    el("date-input").addEventListener("focus", openCalendar);
+    el("cal-prev").addEventListener("click", function () { shiftMonth(-1); });
+    el("cal-next").addEventListener("click", function () { shiftMonth(1); });
+
+    document.addEventListener("click", function (ev) {
+      var picker = document.querySelector(".date-picker");
+      if (picker && !picker.contains(ev.target)) closeCalendar();
+    });
+
     refresh();
     setInterval(refresh, REFRESH_MS);
   }

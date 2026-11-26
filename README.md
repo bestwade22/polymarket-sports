@@ -107,6 +107,48 @@ hold:
 No score is ever required — the sports feed is the least reliable in the
 stack and never gates a trade.
 
+### The dashboard
+
+The dashboard shows every game of an ET date, with the strategy's inputs
+visible:
+
+| Column | Meaning |
+|--------|---------|
+| Tip-off (HKT) | The start time, in Hong Kong time |
+| Matchup | A link to the Polymarket event page |
+| Pre-game | Both teams' pre-game mid prices |
+| Pre-game captured (HKT) | When the pre-game snapshot was taken |
+| Monitored | The team the bot is watching (the pre-game favourite) |
+| Lowest seen | The lowest bid the listener saw for the monitored team, and how far it fell from the pre-game mid |
+| Threshold | The price the trigger fires at (pre-game mid × drop ratio) |
+| Trigger | The price the trigger actually fired at |
+
+All times are rendered in **Hong Kong time**, because the bot runs out of
+`ap-east-1` and is read from Hong Kong. The date picker selects an **ET**
+date - that is how the bot keys its data.
+
+The lowest bid is tracked in memory by the listener and flushed to
+DynamoDB on a timer, so it survives the listener stopping.
+
+### The listener's log
+
+The listener runs as an ECS Fargate task, so its logs are **not** in the
+Lambda log groups. They are in:
+
+```
+/aws/ecs/polymarket-sports/listener
+```
+
+The listener logs a heartbeat every five minutes, which reports the armed
+game count, the subscribed token count, and the current and lowest bid for
+each monitored team:
+
+```
+Heartbeat: 3 armed game(s), 6 token(s) subscribed | Pistons bid=0.4400 low=0.4100; ...
+```
+
+If the heartbeat stops, the listener is stuck.
+
 ### Auto-heal
 
 The listener holds **no trading state**, so a disconnect is recoverable. On
